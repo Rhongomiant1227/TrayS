@@ -1466,6 +1466,7 @@ void OpenSetting()
 	SendDlgItemMessage(hSetting, IDC_SLIDER_ALPHA_B, TBM_SETPOS, TRUE, bAlphaB);
 	SendDlgItemMessage(hSetting, IDC_CHECK_AUTORUN, BM_SETCHECK,
 		IsUserAutoRunEnabledSafe(szAppName), NULL);
+	CheckDlgButton(hSetting, IDC_CHECK_AUTO_UPDATE, g_autoUpdateEnabled);
 	bSettingInit = TRUE;
 	SetDlgItemInt(hSetting, IDC_EDIT1, TraySave.dNumValues[0] / 1048576, 0);
 	SetDlgItemInt(hSetting, IDC_EDIT2, TraySave.dNumValues[1] / 1048576, 0);
@@ -1539,12 +1540,18 @@ static BOOL InitializeSupportedWindowsVersion()
 extern "C" void WinMainCRTStartup()
 {
 	ConfigureSafeDllSearch();
+	// The update helper must run before mappings, Explorer discovery, settings,
+	// or any optional hardware library can be touched by the normal UI path.
+	if (TryRunTraySUpdateCommandLine())
+		return;
 	LPWSTR lpCmdLine;
 #else
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
 	ConfigureSafeDllSearch();
+	if (TryRunTraySUpdateCommandLine())
+		return 0;
 
 /*
 	if (lpCmdLine[0] == L'c')////打开控制面板
@@ -1775,6 +1782,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	GetShellAllWnd();
 	hInst = GetModuleHandle(NULL); // 将实例句柄存储在全局变量中
 	ReadReg();
+	g_autoUpdateEnabled = ReadTraySAutoUpdateSetting();
 	if(!TraySave.bMonitorTips||!TraySave.bMonitor||TraySave.bMonitorTransparent)
 		EnumWindows((WNDENUMPROC)FindSettingWindowFunc, 0);
 	hMutex = CreateMutex(NULL, TRUE, L"_TrayS_");
@@ -2564,6 +2572,8 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 	SetTimer(hMain, 6, 1000, NULL);//每秒处理任务栏图标
 	SetTimer(hMain, 11, 6000, NULL);//内存释放
 	SetTimer(hMain, 3000, 3000, NULL);//每三秒重新读取系统窗口
+	if (g_autoUpdateEnabled)
+		SetTimer(hMain, TRAYS_UPDATE_START_TIMER, 30000, NULL);
 	hGetDataThread = CreateThread(NULL, 0, GetDataThreadProc, 0, 0, 0);
 	hPriceThread = CreateThread(NULL, 0, GetPriceThreadProc, 0, 0, 0);
 	return TRUE;
@@ -5657,6 +5667,61 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		if(bSetting)
 			OpenSetting();
 		break;
+	case WM_APP_TRAYS_UPDATE:
+	{
+		TRAYS_UPDATE_MESSAGE* update = (TRAYS_UPDATE_MESSAGE*)lParam;
+		if (IsWindow(hSetting))
+		{
+			EnableWindow(GetDlgItem(hSetting, IDC_BUTTON_CHECK_UPDATE), TRUE);
+			SetDlgItemTextW(hSetting, IDC_BUTTON_CHECK_UPDATE, L"检查更新");
+		}
+		if (!update)
+			break;
+		if (g_autoUpdateEnabled)
+		{
+			KillTimer(hDlg, TRAYS_UPDATE_PERIOD_TIMER);
+			SetTimer(hDlg, TRAYS_UPDATE_PERIOD_TIMER, 6 * 60 * 60 * 1000, NULL);
+		}
+		if (update->event == TRAYS_UPDATE_EVENT_NO_UPDATE)
+		{
+			if (!update->info.automatic)
+				MessageBoxW(hDlg, L"当前已经是最新版本。", L"TrayS 更新", MB_OK | MB_ICONINFORMATION);
+			FreeTraySUpdateMessage(update, TRUE);
+		}
+		else if (update->event == TRAYS_UPDATE_EVENT_ERROR)
+		{
+			if (!update->info.automatic)
+				MessageBoxW(hDlg, update->error[0] ? update->error : L"检查更新失败。", L"TrayS 更新", MB_OK | MB_ICONWARNING);
+			FreeTraySUpdateMessage(update, TRUE);
+		}
+		else if (update->event == TRAYS_UPDATE_EVENT_READY)
+		{
+			WCHAR prompt[512] = {};
+			wsprintfW(prompt, L"发现 TrayS %s（当前版本为 %s）。\n\n更新包已经下载并通过 SHA-256 校验。现在关闭并重启 TrayS 完成更新吗？",
+				update->info.version, TRAYS_VERSION_STRING);
+			int answer = MessageBoxW(hDlg, prompt, L"TrayS 更新", MB_YESNO | MB_ICONINFORMATION);
+			if (answer == IDYES)
+			{
+				WCHAR targetPath[32768] = {};
+				DWORD length = GetModuleFileNameW(NULL, targetPath, ARRAYSIZE(targetPath));
+				if (length != 0 && length < ARRAYSIZE(targetPath) &&
+					LaunchTraySUpdateApplier(&update->info, GetCurrentProcessId(), targetPath))
+				{
+					FreeTraySUpdateMessage(update, FALSE);
+					if (TrayData)
+						TrayData->bExit = TRUE;
+					bRealClose = TRUE;
+					SendMessage(hDlg, WM_CLOSE, 0, 0);
+					return TRUE;
+				}
+				MessageBoxW(hDlg, L"无法启动更新程序，旧版本仍在运行。", L"TrayS 更新", MB_OK | MB_ICONWARNING);
+			}
+			FreeTraySUpdateMessage(update, TRUE);
+		}
+		else
+			FreeTraySUpdateMessage(update, TRUE);
+	}
+	break;
 	case 0x02e0://WM_DPICHANGED:
 	{
 		iDPI = LOWORD(wParam);
@@ -5675,6 +5740,8 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 	{
 		KillTimer(hDlg, 6);
 		KillTimer(hDlg, 3);
+		KillTimer(hDlg, TRAYS_UPDATE_START_TIMER);
+		KillTimer(hDlg, TRAYS_UPDATE_PERIOD_TIMER);
 		SendMessage(hReBarWnd, WM_SETREDRAW, TRUE, 0);
 		HWND hSecondaryTray;
 		hSecondaryTray = FindWindow(szSecondaryTray, NULL);
@@ -5691,7 +5758,14 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 	break;
 	case WM_TIMER:
 	{
-		if(wParam==88)
+		if (wParam == TRAYS_UPDATE_START_TIMER || wParam == TRAYS_UPDATE_PERIOD_TIMER)
+		{
+			if (wParam == TRAYS_UPDATE_START_TIMER)
+				KillTimer(hDlg, TRAYS_UPDATE_START_TIMER);
+			if (g_autoUpdateEnabled)
+				StartTraySUpdateCheck(hDlg, TRUE);
+		}
+		else if(wParam==88)
 		{
 			KillTimer(hDlg,wParam);
 			bSetting = TRUE;
@@ -6136,6 +6210,28 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 				SetUserAutoRunSafe(TRUE, szAppName);
 			else
 				SetUserAutoRunSafe(FALSE, szAppName);
+		}
+		else if (LOWORD(wParam) == IDC_CHECK_AUTO_UPDATE)
+		{
+			g_autoUpdateEnabled = IsDlgButtonChecked(hDlg, IDC_CHECK_AUTO_UPDATE) ? TRUE : FALSE;
+			WriteTraySAutoUpdateSetting(g_autoUpdateEnabled);
+			if (g_autoUpdateEnabled)
+				SetTimer(hMain, TRAYS_UPDATE_START_TIMER, 1000, NULL);
+			else
+		{
+				KillTimer(hMain, TRAYS_UPDATE_START_TIMER);
+				KillTimer(hMain, TRAYS_UPDATE_PERIOD_TIMER);
+			}
+		}
+		else if (LOWORD(wParam) == IDC_BUTTON_CHECK_UPDATE)
+		{
+			if (StartTraySUpdateCheck(hMain, FALSE))
+			{
+				EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_CHECK_UPDATE), FALSE);
+				SetDlgItemTextW(hDlg, IDC_BUTTON_CHECK_UPDATE, L"检查中...");
+			}
+			else
+				MessageBoxW(hDlg, L"更新检查已经在进行中。", L"TrayS 更新", MB_OK | MB_ICONINFORMATION);
 		}
 		else if (LOWORD(wParam) == IDC_RESTORE_DEFAULT)
 		{

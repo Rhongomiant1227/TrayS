@@ -23,7 +23,10 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if ([string]::IsNullOrWhiteSpace($PackageName)) {
     $platformLabel = if ($Platform -eq 'x64') { 'x64' } else { 'x86' }
-    $PackageName = "_${platformLabel}_ALL_1.4.0"
+    # Keep the product name in the archive so an extracted release is
+    # immediately recognizable instead of looking like an anonymous legacy
+    # `_x64_ALL_...` build.
+    $PackageName = "TrayS_1.5.0_${platformLabel}"
 }
 
 $solutionPath = Join-Path $repoRoot 'TrayS.sln'

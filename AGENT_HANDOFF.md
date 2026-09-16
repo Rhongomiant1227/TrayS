@@ -1,6 +1,6 @@
 # TrayS 维护交接说明
 
-这份文件面向后续维护 agent。当前仓库是 `Rhongomiant1227/TrayS` fork 的 Windows 10/11 维护版，当前产品版本为 **1.4.0**。目标是保留 TrayS 的任务栏监控功能，同时让默认发布包在 AMD、Intel、多显卡和较新的 Windows Shell 上安全降级。
+这份文件面向后续维护 agent。当前仓库是 `Rhongomiant1227/TrayS` fork 的 Windows 10/11 维护版，当前产品版本为 **1.5.0**。目标是保留 TrayS 的任务栏监控功能，同时让默认发布包在 AMD、Intel、多显卡和较新的 Windows Shell 上安全降级。
 
 ## 当前基线
 
@@ -8,7 +8,8 @@
 - 默认 UAC：`asInvoker`。程序不主动提权，不安装服务、计划任务或驱动。
 - 启动顺序：先用 `RtlGetVersion` 检查 Windows 10+，旧系统只显示提示并退出；随后才创建进程映射、查找 Explorer、读取配置和初始化监控接口。
 - 设置 UI：链接指向本 fork 和 `COMPATIBILITY.md`，不再保留旧论坛链接；风格选项对应 `ACCENT_DISABLED`、透明渐变、DWM 模糊和亚克力。
-- 版本信息：资源文件 `TrayS/TrayS.rc` 中为 `1.4.0.0`。`TRAYSAVE` 原始结构保持兼容，当前数据版本仍为 `116`，不要仅因改 UI 就递增它。
+- 更新机制：设置中提供“自动获取更新”（默认开启）和“检查更新”按钮。更新只访问 GitHub HTTPS API/Release，按 `TrayS_<版本>_<架构>.zip` 精确选择资产，并要求 SHA-256、版本和 PE 架构全部匹配；下载、校验和替换在独立线程/临时 PowerShell helper 中完成，不打开浏览器、不加载驱动。更新失败保留旧 EXE。
+- 版本信息：资源文件 `TrayS/TrayS.rc` 中为 `1.5.0.0`。`TRAYSAVE` 原始结构保持兼容，当前数据版本仍为 `116`，不要仅因改 UI 就递增它。
 
 ## 温度与显卡安全边界
 
@@ -30,10 +31,12 @@ Build Tools 保存在仓库目录 `F:\trayS\.buildtools`，用户要求在明确
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate-compatibility.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -Platform x64 -Configuration Release -PackageName _x64_ALL_1.4.0 -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -Platform x64 -Configuration Release -PackageName TrayS_1.5.0_x64 -Force
 ```
 
 生成物应位于 `F:\trayS\dist\`。安全默认包只放 `TrayS.exe`、`COMPATIBILITY.md`、`PACKAGE.txt` 和 `SHA256SUMS.txt`，不得包含 `.buildtools`、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 或 LHM DLL。需要隔离测试 LHM 时才显式使用 `-IncludeLhm`，该包不应作为默认 Release。
+
+Release 资产名称必须包含产品名和架构，例如 `TrayS_1.5.0_x64.zip`、`TrayS_1.5.0_x86.zip`；不要恢复旧的 `_x64_ALL_...` 匿名命名。
 
 当前基线已经在本机完成 `Release|x64` 和 `Release|Win32` 构建，链接结果为 0 个警告、0 个错误；静态检查也已通过。MSBuild 日志中的 `System.Core, Version=3.5.0.0` C++/CLI 加载提示不影响最终产物。真实硬件温度采样尚未执行，后续 agent 必须在隔离环境中验证 AMD、Intel、混合 AMD/NVIDIA 和多显卡场景，不能通过启动当前 TrayS 来替代验证。
 

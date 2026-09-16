@@ -75,9 +75,14 @@ $monitorImplementation = Get-Content -LiteralPath (Join-Path $repoRoot 'OpenHard
 $visitorSource = Get-Content -LiteralPath (Join-Path $repoRoot 'OpenHardwareMonitorApi/UpdateVisitor.cpp') -Raw
 $trayHeader = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.h') -Raw
 $traySource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.cpp') -Raw
+$updateHeaderPath = Join-Path $repoRoot 'TrayS/Update.h'
+$updateSourcePath = Join-Path $repoRoot 'TrayS/Update.cpp'
+$updateHeader = if (Test-Path -LiteralPath $updateHeaderPath) { Get-Content -LiteralPath $updateHeaderPath -Raw } else { '' }
+$updateSource = if (Test-Path -LiteralPath $updateSourcePath) { Get-Content -LiteralPath $updateSourcePath -Raw } else { '' }
 $resourceSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.rc') -Raw
 $functionSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/Function.cpp') -Raw
 $trayProject = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj') -Raw
+$trayFilters = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj.filters') -Raw
 Assert-Condition ($apiHeader -match '\*fCpu\s*=\s*-1\.0f') 'GetTemperature does not initialize CPU output'
 Assert-Condition ($apiHeader -match 'static_cast<size_t>\(iHDD\)\s*<\s*temperatures\.size\(\)') 'HDD index is not bounds checked'
 Assert-Condition ($apiHeader -match 'try\s*\{[\s\S]*m_pMonitor->GetHardwareInfo\(\)') 'GetTemperature does not contain the managed update boundary'
@@ -104,7 +109,8 @@ Assert-Condition ($traySource -match 'TRAYS_ENABLE_LHM') 'LHM safety opt-in guar
 Assert-Condition ($traySource -match 'bLhmDisabled\s*=\s*!IsLhmOptIn') 'LHM is not disabled by default'
 Assert-Condition ($traySource -match 'InitializeSupportedWindowsVersion') 'Windows 10+ startup gate is missing'
 Assert-Condition ($traySource -match 'dwMajorVersion\s*>=\s*10') 'Windows 10+ version comparison is missing'
-Assert-Condition ($resourceSource -match 'TrayS 1\.4\.0') 'Maintained UI version label is missing'
+Assert-Condition ($resourceSource -match 'TrayS 1\.5\.0') 'Maintained UI version label is missing'
+Assert-Condition ($resourceSource -match 'FILEVERSION 1,5,0,0' -and $resourceSource -match 'PRODUCTVERSION 1,5,0,0') 'Resource version is not 1.5.0'
 Assert-Condition ($resourceSource -match 'IDC_SYSLINK_COMPAT') 'Compatibility documentation link is missing'
 Assert-Condition ($resourceSource -match 'Windows 10/11') 'Windows 10/11 UI support note is missing'
 Assert-Condition ($resourceSource -notmatch '52[Pp]o[Jj]ie|52破解|Win8只能|Win7只能|Ver 1\.3\.9') 'Obsolete UI compatibility text remains'
@@ -123,6 +129,21 @@ Assert-Condition ($functionSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL,
 Assert-Condition ($functionSource -match 'kPriceHttpTimeoutMs\s*=\s*5000' -and $functionSource -match 'winHttpSetTimeouts\(') 'WinHTTP timeout is not bounded to 5000 ms'
 Assert-Condition ($functionSource -notmatch '(?m)^\s*(?!//).*\bLoadLibrary\s*\(') 'Function.cpp contains an unqualified LoadLibrary call'
 Assert-Condition ($functionSource -match '#if defined\(TRAYS_ENABLE_LEGACY_SERVICE\)') 'Legacy service code is not compile-time gated'
+Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.5\.0"') 'Updater version identity is missing'
+Assert-Condition ($updateHeader -match 'TRAYS_UPDATE_API_PATH') 'Updater GitHub API path is missing'
+Assert-Condition ($updateSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'Updater WinHTTP is not loaded from System32'
+Assert-Condition ($updateSource -match 'WINHTTP_FLAG_SECURE') 'Updater request is not HTTPS-only'
+Assert-Condition ($updateSource -match 'TrayS_%s_%s\.zip') 'Updater does not require the versioned architecture-specific TrayS asset name'
+Assert-Condition ($updateSource -match 'HashFileSha256') 'Updater SHA-256 verification is missing'
+Assert-Condition ($updateSource -match 'Get-FileHash') 'Updater applier does not re-check SHA-256'
+Assert-Condition ($updateSource -match 'Expand-Archive') 'Updater extraction step is missing'
+Assert-Condition ($updateSource -match 'TRAYS_UPDATE_EVENT_READY') 'Updater ready event is missing'
+Assert-Condition ($traySource -match 'StartTraySUpdateCheck\(hMain, FALSE\)') 'Manual update check button is not wired'
+Assert-Condition ($traySource -match 'TRAYS_UPDATE_START_TIMER') 'Automatic update timer is not wired'
+Assert-Condition ($resourceSource -match 'IDC_BUTTON_CHECK_UPDATE' -and $resourceSource -match 'IDC_CHECK_AUTO_UPDATE') 'Update settings controls are missing'
+Assert-Condition ($trayProject -match '<ClCompile Include="Update\.cpp"' -and $trayProject -match '<ClInclude Include="Update\.h"') 'Updater files are not in the project'
+Assert-Condition ($trayFilters -match 'Update\.cpp' -and $trayFilters -match 'Update\.h') 'Updater files are not in project filters'
+Assert-Condition ($traySource -notmatch 'ShellExecuteW.*download|start.*https://') 'Updater must not launch a browser or external downloader'
 
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Error $_ }

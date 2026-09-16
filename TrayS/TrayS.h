@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "resource.h"
 #include "function.h"
+#include "Update.h"
 #include <Commdlg.h>
 #include <Oleacc.h>
 #include <winsock2.h>
@@ -180,6 +181,9 @@ int iDPI = 96;//当前DPI
 BOOL VTray = FALSE;//竖的任务栏
 BOOL bRealClose = FALSE;
 BOOL bSetting = FALSE;
+// GitHub update checks are opt-out and persisted separately from the legacy
+// fixed-size TrayS.dat structure so old user profiles remain binary-safe.
+BOOL g_autoUpdateEnabled = TRUE;
 /////////////////////////////////////////////////获取数据线程
 DWORD WINAPI MainThreadProc(PVOID pParam);
 DWORD WINAPI GetDataThreadProc(PVOID pParam);
