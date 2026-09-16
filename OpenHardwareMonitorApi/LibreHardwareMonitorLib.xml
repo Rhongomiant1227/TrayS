@@ -103,39 +103,67 @@
             <see cref="T:LibreHardwareMonitor.Hardware.Computer" /> specific additional settings passed to its <see cref="T:LibreHardwareMonitor.Hardware.IHardware" />.
             </summary>
         </member>
-        <member name="T:LibreHardwareMonitor.Hardware.Controller.Nzxt.KrakenX3">
-            Support for the Kraken X3 devices from NZXT
-        </member>
-        <member name="M:LibreHardwareMonitor.Hardware.CPU.CpuId.#ctor(System.Int32,System.Int32,LibreHardwareMonitor.Hardware.GroupAffinity)">
+        <member name="T:LibreHardwareMonitor.Hardware.Controller.Nzxt.GridV3">
             <summary>
-            Initializes a new instance of the <see cref="T:LibreHardwareMonitor.Hardware.CPU.CpuId" /> class.
+            Support for the NZXT GRID+ V3 devices.
+            </summary>
+        </member>
+        <member name="T:LibreHardwareMonitor.Hardware.Controller.Nzxt.KrakenV2">
+            <summary>
+            Support for the Kraken X (X42, X52, X62 or X72) devices.
+            </summary>
+        </member>
+        <member name="T:LibreHardwareMonitor.Hardware.Controller.Nzxt.KrakenV3">
+            <summary>
+            Support for the KrakenZ devices.
+            </summary>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Cpu.CpuId.#ctor(System.Int32,System.Int32,LibreHardwareMonitor.Hardware.GroupAffinity)">
+            <summary>
+            Initializes a new instance of the <see cref="T:LibreHardwareMonitor.Hardware.Cpu.CpuId" /> class.
             </summary>
             <param name="group">The group.</param>
             <param name="thread">The thread.</param>
             <param name="affinity">The affinity.</param>
         </member>
-        <member name="M:LibreHardwareMonitor.Hardware.CPU.CpuId.Get(System.Int32,System.Int32)">
+        <member name="M:LibreHardwareMonitor.Hardware.Cpu.CpuId.Get(System.Int32,System.Int32)">
             <summary>
-            Gets the specified <see cref="T:LibreHardwareMonitor.Hardware.CPU.CpuId" />.
+            Gets the specified <see cref="T:LibreHardwareMonitor.Hardware.Cpu.CpuId" />.
             </summary>
             <param name="group">The group.</param>
             <param name="thread">The thread.</param>
-            <returns><see cref="T:LibreHardwareMonitor.Hardware.CPU.CpuId" />.</returns>
+            <returns><see cref="T:LibreHardwareMonitor.Hardware.Cpu.CpuId" />.</returns>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.CPU.GenericCpu.CpuId">
+        <member name="P:LibreHardwareMonitor.Hardware.Cpu.GenericCpu.CpuId">
             <summary>
             Gets the CPUID.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.CPU.GenericCpu.Index">
+        <member name="P:LibreHardwareMonitor.Hardware.Cpu.GenericCpu.Index">
             <summary>
             Gets the CPU index.
             </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.Gpu.AmdGpu.DeviceId">
+            <inheritdoc />
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Gpu.AmdGpu.SetDefaultFanSpeed">
             <summary>
             Sets the default fan speed.
             </summary>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Gpu.AmdGpu.GetAdlSensor(LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogData,LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogDataOutput,LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogSensors,LibreHardwareMonitor.Hardware.Sensor,System.Single,System.Boolean)">
+             <summary>
+             Gets a sensor value.
+             </summary>
+
+             <param name="adlPMLogData">Current pmlog struct, used with pmlog-support/start.</param>
+             <param name="od8Log">Legacy pmlogdataoutput struct, used with ADL2_New_QueryPMLogData_Get.</param>
+             <param name="sensorType">Type of the sensor.</param>
+             <param name="sensor">The sensor.</param>
+             <param name="factor">The factor.</param>
+             <param name="reset">If set to <c>true</c>, resets the sensor value to <c>null</c>.</param>
+             <returns>true if sensor is supported, false otherwise</returns>
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Gpu.AmdGpu.GetODNTemperature(LibreHardwareMonitor.Interop.AtiAdlxx.ADLODNTemperatureType,LibreHardwareMonitor.Hardware.Sensor,System.Double,System.Double,System.Boolean)">
             <summary>
@@ -147,21 +175,31 @@
             <param name="scale">The scale.</param>
             <param name="reset">If set to <c>true</c>, resets the sensor value to <c>null</c>.</param>
         </member>
-        <member name="M:LibreHardwareMonitor.Hardware.Gpu.AmdGpu.GetPMLog(LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogDataOutput,LibreHardwareMonitor.Interop.AtiAdlxx.ADLSensorType,LibreHardwareMonitor.Hardware.Sensor,System.Single,System.Boolean)">
-            <summary>
-            Gets a PMLog sensor value.
-            </summary>
-            <param name="data">The data.</param>
-            <param name="sensorType">Type of the sensor.</param>
-            <param name="sensor">The sensor.</param>
-            <param name="factor">The factor.</param>
-        </member>
         <member name="M:LibreHardwareMonitor.Hardware.Gpu.AmdGpu.GetOD6Power(LibreHardwareMonitor.Interop.AtiAdlxx.ADLODNCurrentPowerType,LibreHardwareMonitor.Hardware.Sensor)">
             <summary>
             Gets the Overdrive6 power.
             </summary>
             <param name="type">The type.</param>
             <param name="sensor">The sensor.</param>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Gpu.GenericGpu.#ctor(System.String,LibreHardwareMonitor.Hardware.Identifier,LibreHardwareMonitor.Hardware.ISettings)">
+            <summary>
+            Initializes a new instance of the <see cref="T:LibreHardwareMonitor.Hardware.Gpu.GenericGpu" /> class.
+            </summary>
+            <param name="name">Component name.</param>
+            <param name="identifier">Identifier that will be assigned to the device. Based on <see cref="T:LibreHardwareMonitor.Hardware.Identifier" /></param>
+            <param name="settings">Additional settings passed by the <see cref="T:LibreHardwareMonitor.Hardware.IComputer" />.</param>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.Gpu.GenericGpu.DeviceId">
+            <summary>
+            Gets the device identifier.
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.Gpu.IntelIntegratedGpu.DeviceId">
+            <inheritdoc />
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.Gpu.NvidiaGpu.DeviceId">
+            <inheritdoc />
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.GroupAffinity">
             <summary>
@@ -398,15 +436,35 @@
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.Identifier">
             <summary>
-            Represents a unique <see cref="T:LibreHardwareMonitor.Hardware.ISensor"/>/<see cref="T:LibreHardwareMonitor.Hardware.IHardware"/> identifier in text format with a / separator.
+            Represents a unique <see cref="T:LibreHardwareMonitor.Hardware.ISensor" />/<see cref="T:LibreHardwareMonitor.Hardware.IHardware" /> identifier in text format with a / separator.
             </summary>
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Identifier.#ctor(LibreHardwareMonitor.Hardware.Identifier,System.String[])">
             <summary>
-            Creates a new identifier instance based on the base <see cref="T:LibreHardwareMonitor.Hardware.Identifier"/> and additional elements.
+            Creates a new identifier instance based on the base <see cref="T:LibreHardwareMonitor.Hardware.Identifier" /> and additional elements.
             </summary>
             <param name="identifier">Base identifier being the beginning of the new one.</param>
-            <param name="extensions">Additional parts by which the base <see cref="T:LibreHardwareMonitor.Hardware.Identifier"/> will be extended.</param>
+            <param name="extensions">Additional parts by which the base <see cref="T:LibreHardwareMonitor.Hardware.Identifier" /> will be extended.</param>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Identifier.#ctor(HidSharp.HidDevice)">
+            <summary>
+            Creates a new identifier instance based on the supplied <see cref="T:HidSharp.HidDevice" />.
+            If available the identifier will consist of the vendor-id, product-id and serial number of the HidDevice.
+            Alternatively a platform dependent identifier based on the usb device-path is generated.
+            </summary>
+            <param name="dev">The <see cref="T:HidSharp.HidDevice" /> this identifier will be created for.</param>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Identifier.CompareTo(LibreHardwareMonitor.Hardware.Identifier)">
+            <inheritdoc />
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Identifier.ToString">
+            <inheritdoc />
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Identifier.Equals(System.Object)">
+            <inheritdoc />
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Identifier.GetHashCode">
+            <inheritdoc />
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.IElement">
             <summary>
@@ -510,7 +568,6 @@
         <member name="E:LibreHardwareMonitor.Hardware.IHardware.SensorRemoved">
             <summary>
             An <see langword="event"/> that will be triggered when one of the sensors is removed.
-            
             </summary>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.IHardware.Properties">
@@ -638,6 +695,11 @@
             Resets a value stored in <see cref="P:LibreHardwareMonitor.Hardware.ISensor.Max"/>.
             </summary>
         </member>
+        <member name="M:LibreHardwareMonitor.Hardware.ISensor.ClearValues">
+            <summary>
+            Clears the values stored in <see cref="P:LibreHardwareMonitor.Hardware.ISensor.Values"/>.
+            </summary>
+        </member>
         <member name="T:LibreHardwareMonitor.Hardware.ISensorLimits">
             <summary>
             Abstract object that stores information about the limits of <see cref="T:LibreHardwareMonitor.Hardware.ISensor"/>.
@@ -734,9 +796,14 @@
         <member name="F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController.ECSensor.TempCPU">
             <summary>CPU temperature [℃]</summary>
         </member>
-        <!-- Badly formed XML comment ignored for member "F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController.ECSensor.TempMB" -->
+        <member name="F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController.ECSensor.TempMB">
+            <summary>motherboard temperature [℃]</summary>
+        </member>
         <member name="F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController.ECSensor.TempTSensor">
             <summary>"T_Sensor" temperature sensor reading [℃]</summary>
+        </member>
+        <member name="F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController.ECSensor.TempTSensor2">
+            <summary>"T_Sensor 2" temperature sensor reading [℃]</summary>
         </member>
         <member name="F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController.ECSensor.TempVrm">
             <summary>VRM temperature [℃]</summary>
@@ -768,6 +835,9 @@
         <member name="F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController.ECSensor.TempWaterOut">
             <summary>"Water_Out" temperature sensor reading [℃]</summary>
         </member>
+        <member name="F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController.ECSensor.TempWaterBlockIn">
+            <summary>Water block temperature sensor reading [℃]</summary>
+        </member>
         <member name="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.WindowsEmbeddedControllerIO">
             <summary>
             An unsafe but universal implementation for the ACPI Embedded Controller IO interface for Windows
@@ -778,11 +848,30 @@
             different for each motherboard model.
             </remarks>
         </member>
-        <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Lpc.IT87XX.GetCurrentBank">
+        <member name="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.IsaBridgeGigabyteController">
             <summary>
-            Return the currently active bank index.
+            This is a controller present on some Gigabyte motherboards for both Intel and AMD, that is in custom firmware
+            loaded onto the 2nd ITE EC.
+            It can be accessed by using memory mapped IO, mapping its internal RAM onto main RAM via the ISA Bridge.
+            This class can disable it so that the regular IT87XX code can drive the fans.
             </summary>
-            <returns></returns>
+        </member>
+        <member name="F:LibreHardwareMonitor.Hardware.Motherboard.Lpc.IsaBridgeGigabyteController._controllerBaseAddress">
+            <summary>
+            Base address in PCI RAM that maps to the EC's RAM
+            </summary>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Lpc.IsaBridgeGigabyteController.Enable(System.Boolean)">
+            <summary>
+            Enable/Disable Fan Control
+            </summary>
+            <param name="enabled"></param>
+            <returns>true on success</returns>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Lpc.IsaBridgeGigabyteController.Restore">
+            <summary>
+            Restore settings back to initial values
+            </summary>
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Lpc.IT87XX.SelectBank(System.Byte)">
             <summary>
@@ -794,68 +883,89 @@
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.Motherboard.Motherboard">
             <summary>
-            Represents the motherboard of a computer with its <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.LpcIO"/> and <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController"/> as <see cref="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware"/>.
+            Represents the motherboard of a computer with its <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.LpcIO" /> and <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController" /> as <see cref="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware" />.
             </summary>
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.#ctor(LibreHardwareMonitor.Hardware.SMBios,LibreHardwareMonitor.Hardware.ISettings)">
             <summary>
-            Creates motherboard instance by retrieving information from <see cref="T:LibreHardwareMonitor.Hardware.SMBios"/> and creates a new <see cref="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware"/> based on data from <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.LpcIO"/> and <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController"/>.
+            Creates motherboard instance by retrieving information from <see cref="T:LibreHardwareMonitor.Hardware.SMBios" /> and creates a new <see cref="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware" /> based on data from <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.LpcIO" />
+            and <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Lpc.EC.EmbeddedController" />.
             </summary>
-            <param name="smBios"><see cref="T:LibreHardwareMonitor.Hardware.SMBios"/> table containing motherboard data.</param>
-            <param name="settings">Additional settings passed by <see cref="T:LibreHardwareMonitor.Hardware.IComputer"/>.</param>
+            <param name="smBios"><see cref="T:LibreHardwareMonitor.Hardware.SMBios" /> table containing motherboard data.</param>
+            <param name="settings">Additional settings passed by <see cref="T:LibreHardwareMonitor.Hardware.IComputer" />.</param>
         </member>
         <member name="E:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SensorAdded">
-            <inheritdoc/>
+            <inheritdoc />
         </member>
         <member name="E:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SensorRemoved">
-            <inheritdoc/>
+            <inheritdoc />
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.HardwareType">
-            <returns><see cref="F:LibreHardwareMonitor.Hardware.HardwareType.Motherboard"/></returns>
+            <inheritdoc />
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Identifier">
-            <inheritdoc/>
+            <inheritdoc />
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Manufacturer">
+            <summary>
+            Gets the <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Manufacturer" />.
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Model">
+            <summary>
+            Gets the <see cref="T:LibreHardwareMonitor.Hardware.Motherboard.Model" />.
+            </summary>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Name">
             <summary>
-            Gets the name obtained from <see cref="T:LibreHardwareMonitor.Hardware.SMBios"/>.
+            Gets the name obtained from <see cref="T:LibreHardwareMonitor.Hardware.SMBios" />.
             </summary>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Parent">
-            <inheritdoc/>
-            <returns>Always <see langword="null"/></returns>
+            <inheritdoc />
+            <returns>Always <see langword="null" /></returns>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Properties">
-            <inheritdoc/>
+            <inheritdoc />
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Sensors">
-            <inheritdoc/>
+            <inheritdoc />
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SMBios">
             <summary>
-            Gets the <see cref="T:LibreHardwareMonitor.Hardware.SMBios"/> information.
+            Gets the <see cref="T:LibreHardwareMonitor.Hardware.SMBios" /> information.
             </summary>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware">
-            <inheritdoc/>
+            <inheritdoc />
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.GetReport">
-            <inheritdoc/>
+            <inheritdoc />
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Update">
             <summary>
-            Motherboard itself cannot be updated. Update <see cref="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware"/> instead.
+            Motherboard itself cannot be updated. Update <see cref="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware" /> instead.
             </summary>
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Accept(LibreHardwareMonitor.Hardware.IVisitor)">
-            <inheritdoc/>
+            <inheritdoc />
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Traverse(LibreHardwareMonitor.Hardware.IVisitor)">
-            <inheritdoc/>
+            <inheritdoc />
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.Close">
             <summary>
-            Closes <see cref="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware"/> using <see cref="M:LibreHardwareMonitor.Hardware.Hardware.Close"/>.
+            Closes <see cref="P:LibreHardwareMonitor.Hardware.Motherboard.Motherboard.SubHardware" /> using <see cref="M:LibreHardwareMonitor.Hardware.Hardware.Close" />.
+            </summary>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Mutexes.Open">
+            <summary>
+            Opens the mutexes.
+            </summary>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Mutexes.Close">
+            <summary>
+            Closes the mutexes.
             </summary>
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.ParameterDescription">
@@ -924,24 +1034,29 @@
             </summary>
             <param name="parameter">Parameter class instance that is derived from the <see cref="T:LibreHardwareMonitor.Hardware.IParameter"/> interface.</param>
         </member>
-        <member name="T:LibreHardwareMonitor.Hardware.ChassisSecurityStatus">
+        <member name="T:LibreHardwareMonitor.Hardware.SystemEnclosureSecurityStatus">
             <summary>
-            Chassis security status based on <see href="https://www.dmtf.org/dsp/DSP0134">DMTF SMBIOS Reference Specification v.3.3.0, Chapter 7.4.3</see>.
+            System enclosure security status based on <see href="https://www.dmtf.org/dsp/DSP0134">DMTF SMBIOS Reference Specification v.3.3.0, Chapter 7.4.3</see>.
             </summary>
         </member>
-        <member name="T:LibreHardwareMonitor.Hardware.ChassisStates">
+        <member name="T:LibreHardwareMonitor.Hardware.SystemEnclosureState">
             <summary>
-            Chassis state based on <see href="https://www.dmtf.org/dsp/DSP0134">DMTF SMBIOS Reference Specification v.3.3.0, Chapter 7.4.2</see>.
+            System enclosure state based on <see href="https://www.dmtf.org/dsp/DSP0134">DMTF SMBIOS Reference Specification v.3.3.0, Chapter 7.4.2</see>.
             </summary>
         </member>
-        <member name="T:LibreHardwareMonitor.Hardware.ChassisType">
+        <member name="T:LibreHardwareMonitor.Hardware.SystemEnclosureType">
             <summary>
-            Chassis type based on <see href="https://www.dmtf.org/dsp/DSP0134">DMTF SMBIOS Reference Specification v.3.3.0, Chapter 7.4.1</see>.
+            System enclosure type based on <see href="https://www.dmtf.org/dsp/DSP0134">DMTF SMBIOS Reference Specification v.3.3.0, Chapter 7.4.1</see>.
             </summary>
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.ProcessorFamily">
             <summary>
             Processor family based on <see href="https://www.dmtf.org/dsp/DSP0134">DMTF SMBIOS Reference Specification v.3.3.0, Chapter 7.5.2</see>.
+            </summary>
+        </member>
+        <member name="T:LibreHardwareMonitor.Hardware.ProcessorCharacteristics">
+            <summary>
+            Processor characteristics based on <see href="https://www.dmtf.org/dsp/DSP0134">DMTF SMBIOS Reference Specification v.3.3.0, Chapter 7.5.9</see>.
             </summary>
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.ProcessorType">
@@ -969,6 +1084,11 @@
             Processor cache level.
             </summary>
         </member>
+        <member name="T:LibreHardwareMonitor.Hardware.MemoryType">
+            <summary>
+            Memory type.
+            </summary>
+        </member>
         <member name="M:LibreHardwareMonitor.Hardware.InformationBase.#ctor(System.Byte[],System.Collections.Generic.IList{System.String})">
             <summary>
             Initializes a new instance of the <see cref="T:LibreHardwareMonitor.Hardware.InformationBase" /> class.
@@ -981,14 +1101,28 @@
             Gets the byte.
             </summary>
             <param name="offset">The offset.</param>
-            <returns><see cref="T:System.Int32" />.</returns>
+            <returns><see cref="T:System.Byte" />.</returns>
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.InformationBase.GetWord(System.Int32)">
             <summary>
             Gets the word.
             </summary>
             <param name="offset">The offset.</param>
-            <returns><see cref="T:System.Int32" />.</returns>
+            <returns><see cref="T:System.UInt16" />.</returns>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.InformationBase.GetDword(System.Int32)">
+            <summary>
+            Gets the dword.
+            </summary>
+            <param name="offset">The offset.</param>
+            <returns><see cref="T:System.UInt16" />.</returns>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.InformationBase.GetQword(System.Int32)">
+            <summary>
+            Gets the qword.
+            </summary>
+            <param name="offset">The offset.</param>
+            <returns><see cref="T:System.UInt64" />.</returns>
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.InformationBase.GetString(System.Int32)">
             <summary>
@@ -1075,74 +1209,74 @@
             Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.SystemWakeUp" />
             </summary>
         </member>
-        <member name="T:LibreHardwareMonitor.Hardware.ChassisInformation">
+        <member name="T:LibreHardwareMonitor.Hardware.SystemEnclosure">
             <summary>
-            Chassis information obtained from the SMBIOS table.
+            System enclosure obtained from the SMBIOS table.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.AssetTag">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.AssetTag">
             <summary>
             Gets the asset tag associated with the enclosure or chassis.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.BootUpState">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.BootUpState">
             <summary>
-            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.ChassisStates" />
+            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.SystemEnclosureState" />
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.ChassisType">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.LockDetected">
             <summary>
-            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.ChassisType" />
+            Gets or sets the system enclosure lock.
             </summary>
+            <returns>System enclosure lock is present if <see langword="true" />. Otherwise, either a lock is not present or it is unknown if the enclosure has a lock.</returns>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.LockDetected">
-            <summary>
-            Gets or sets the chassis lock.
-            </summary>
-            <returns>Chassis lock is present if <see langword="true" />. Otherwise, either a lock is not present or it is unknown if the enclosure has a lock.</returns>
-        </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.ManufacturerName">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.ManufacturerName">
             <summary>
             Gets the string describing the chassis or enclosure manufacturer name.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.PowerCords">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.PowerCords">
             <summary>
             Gets the number of power cords associated with the enclosure or chassis.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.PowerSupplyState">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.PowerSupplyState">
             <summary>
             Gets the state of the enclosure’s power supply (or supplies) when last booted.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.RackHeight">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.RackHeight">
             <summary>
             Gets the height of the enclosure, in 'U's. A U is a standard unit of measure for the height of a rack or rack-mountable component and is equal to 1.75 inches or 4.445 cm. A value of <c>0</c>
             indicates that the enclosure height is unspecified.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.SecurityStatus">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.SecurityStatus">
             <summary>
             Gets the physical security status of the enclosure when last booted.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.SerialNumber">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.SerialNumber">
             <summary>
             Gets the string describing the chassis or enclosure serial number.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.SKU">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.SKU">
             <summary>
             Gets the string describing the chassis or enclosure SKU number.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.ThermalState">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.ThermalState">
             <summary>
             Gets the thermal state of the enclosure when last booted.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ChassisInformation.Version">
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.Type">
+            <summary>
+            Gets <inheritdoc cref="P:LibreHardwareMonitor.Hardware.SystemEnclosure.Type" />
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.SystemEnclosure.Version">
             <summary>
             Gets the number of null-terminated string representing the chassis or enclosure version.
             </summary>
@@ -1177,6 +1311,11 @@
             Processor information obtained from the SMBIOS table.
             </summary>
         </member>
+        <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.Characteristics">
+            <summary>
+            Gets the characteristics of the processor.
+            </summary>
+        </member>
         <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.CoreCount">
             <summary>
             Gets the value that represents the number of cores per processor socket.
@@ -1200,6 +1339,32 @@
         <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.Family">
             <summary>
             Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.ProcessorFamily" />
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.Handle">
+            <summary>
+            Gets the handle.
+            </summary>
+            <value>The handle.</value>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.Id">
+            <summary>
+            Gets the identifier.
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.L1CacheHandle">
+            <summary>
+            Gets the L1 cache handle.
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.L2CacheHandle">
+            <summary>
+            Gets the L2 cache handle.
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.L3CacheHandle">
+            <summary>
+            Gets the L3 cache handle.
             </summary>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.ProcessorInformation.ManufacturerName">
@@ -1243,27 +1408,32 @@
             Gets the value that represents the string number describing the Processor.
             </summary>
         </member>
-        <member name="T:LibreHardwareMonitor.Hardware.ProcessorCache">
+        <member name="T:LibreHardwareMonitor.Hardware.CacheInformation">
             <summary>
-            Processor cache information obtained from the SMBIOS table.
+            Cache information obtained from the SMBIOS table.
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ProcessorCache.Associativity">
+        <member name="P:LibreHardwareMonitor.Hardware.CacheInformation.Associativity">
             <summary>
             Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.CacheAssociativity" />
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ProcessorCache.Designation">
+        <member name="P:LibreHardwareMonitor.Hardware.CacheInformation.Designation">
             <summary>
             Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.CacheDesignation" />
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.ProcessorCache.Size">
+        <member name="P:LibreHardwareMonitor.Hardware.CacheInformation.Handle">
+            <summary>
+            Gets the handle.
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.CacheInformation.Size">
             <summary>
             Gets the value that represents the installed cache size.
             </summary>
         </member>
-        <member name="M:LibreHardwareMonitor.Hardware.ProcessorCache.GetCacheDesignation">
+        <member name="M:LibreHardwareMonitor.Hardware.CacheInformation.GetCacheDesignation">
             <summary>
             Gets the cache designation.
             </summary>
@@ -1301,17 +1471,40 @@
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.MemoryDevice.Size">
             <summary>
-            Gets the size of the memory device. If the value is 0, no memory device is installed in the socket.
+            Gets the size of the memory device.
+            If the value is 0, no memory device is installed in the socket.
+            If the value is 0xFFFF, the size is unknown.
             </summary>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.MemoryDevice.Speed">
             <summary>
-            Gets the the value that identifies the maximum capable speed of the device, in mega transfers per second (MT/s).
+            Gets the value that identifies the maximum capable speed of the device, in mega transfers per second (MT/s).
             </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.MemoryDevice.ConfiguredSpeed">
+            <summary>
+            Gets the configured speed of the device, in mega transfers per second (MT/s).
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.MemoryDevice.ConfiguredVoltage">
+            <summary>
+            Gets the configured voltage of this memory device, in millivolts (mV).
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.MemoryDevice.Type">
+            <summary>
+            Gets the type of this memory device.
+            </summary>
+            <value>The type.</value>
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.SMBios">
             <summary>
             Reads and processes information encoded in an SMBIOS table.
+            </summary>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.SMBios.#ctor">
+            <summary>
+            Initializes a new instance of the <see cref="T:LibreHardwareMonitor.Hardware.SMBios" /> class.
             </summary>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.SMBios.Bios">
@@ -1324,24 +1517,19 @@
             Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.BaseBoardInformation" />
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.SMBios.Chassis">
-            <summary>
-            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.ChassisInformation" />
-            </summary>
-        </member>
         <member name="P:LibreHardwareMonitor.Hardware.SMBios.MemoryDevices">
             <summary>
             Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.MemoryDevice" />
             </summary>
         </member>
-        <member name="P:LibreHardwareMonitor.Hardware.SMBios.Processor">
-            <summary>
-            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.ProcessorInformation" />
-            </summary>
-        </member>
         <member name="P:LibreHardwareMonitor.Hardware.SMBios.ProcessorCaches">
             <summary>
-            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.ProcessorCache" />
+            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.CacheInformation" />
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Hardware.SMBios.Processors">
+            <summary>
+            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.ProcessorInformation" />
             </summary>
         </member>
         <member name="P:LibreHardwareMonitor.Hardware.SMBios.System">
@@ -1349,11 +1537,19 @@
             Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.SystemInformation" />
             </summary>
         </member>
+        <member name="P:LibreHardwareMonitor.Hardware.SMBios.SystemEnclosure">
+            <summary>
+            Gets <inheritdoc cref="T:LibreHardwareMonitor.Hardware.SystemEnclosure" />
+            </summary>
+        </member>
         <member name="M:LibreHardwareMonitor.Hardware.SMBios.GetReport">
             <summary>
             Report containing most of the information that could be read from the SMBIOS table.
             </summary>
             <returns>A formatted text string with computer information and the entire SMBIOS table.</returns>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Storage.AbstractStorage.Close">
+            <inheritdoc />
         </member>
         <member name="T:LibreHardwareMonitor.Hardware.Storage.AbstractStorage.PerformanceValue">
             <summary>
@@ -1436,6 +1632,25 @@
         <member name="M:LibreHardwareMonitor.Hardware.Storage.SsdMicron.UpdateAdditionalSensors(LibreHardwareMonitor.Interop.Kernel32.SMART_ATTRIBUTE[])">
             <inheritdoc />
         </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Storage.StorageGroup.AddHardware(LibreHardwareMonitor.Hardware.ISettings,System.Collections.Generic.Dictionary{System.UInt32,System.Collections.Generic.List{System.ValueTuple{System.UInt32,System.UInt64}}})">
+            <summary>
+            Adds the hardware.
+            </summary>
+            <param name="settings">The settings.</param>
+            <param name="storageSpaceDiskToPhysicalDiskMap">The storage space disk to physical disk map.</param>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Storage.StorageGroup.GetStorageSpaceDiskToPhysicalDiskMap">
+            <summary>
+            Maps each StorageSpace to the PhysicalDisks it is composed of.
+            </summary>
+        </member>
+        <member name="M:LibreHardwareMonitor.Hardware.Storage.StorageGroup.MapDiskToPhysicalDisk(System.Management.ManagementBaseObject,System.Management.ManagementScope)">
+            <summary>
+            Maps a disk to a physical disk.
+            </summary>
+            <param name="disk">The disk.</param>
+            <param name="scope">The scope.</param>
+        </member>
         <member name="M:LibreHardwareMonitor.Hardware.Storage.WindowsSmart.ReadSmartHealth">
             <summary>
             Reads Smart health status of the drive
@@ -1451,13 +1666,6 @@
             <summary>
             Gets the processor group count.
             </summary>
-        </member>
-        <member name="M:LibreHardwareMonitor.Hardware.ThreadAffinity.IsValid(LibreHardwareMonitor.Hardware.GroupAffinity)">
-            <summary>
-            Returns true if the <paramref name="affinity"/> is valid.
-            </summary>
-            <param name="affinity">The affinity.</param>
-            <returns><c>true</c> if the specified affinity is valid; otherwise, <c>false</c>.</returns>
         </member>
         <member name="M:LibreHardwareMonitor.Hardware.ThreadAffinity.Set(LibreHardwareMonitor.Hardware.GroupAffinity)">
             <summary>
@@ -1563,6 +1771,63 @@
             There's no Linux XDisplay in Linux Console environment.
             </summary>
         </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogSupportInfo.usSensors">
+            list of sensors defined by ADL_PMLOG_SENSORS
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogSupportInfo.iReserved">
+            Reserved
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogStartInput.usSensors">
+            list of sensors defined by ADL_PMLOG_SENSORS
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogStartInput.ulSampleRate">
+            Sample rate in milliseconds
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogStartInput.iReserved">
+            Reserved
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogStartOutput.pLoggingAddress">
+            Pointer to memory address containing logging data
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogData.ulVersion">
+            Structure version
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogData.ulActiveSampleRate">
+            Current driver sample rate
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogData.ulLastUpdated">
+            Timestamp of last update
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLPMLogData.ulReserved">
+            Reserved
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.iMemorySize">
+            Memory size in bytes.
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.strMemoryType">
+            Memory type in string.
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.iMemoryBandwidth">
+            Highest default performance level Memory bandwidth in Mbytes/s
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.iHyperMemorySize">
+            HyperMemory size in bytes.
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.iInvisibleMemorySize">
+            Invisible Memory size in bytes.
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.iVisibleMemorySize">
+            Visible Memory size in bytes.
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.iVramVendorRevId">
+            Vram vendor ID
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.iMemoryBandwidthX2">
+            Memory Bandiwidth that is calculated and finalized on the driver side, grab and go.
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.AtiAdlxx.ADLMemoryInfoX4.iMemoryBitRateX2">
+            Memory Bit Rate that is calculated and finalized on the driver side, grab and go.
+        </member>
         <member name="F:LibreHardwareMonitor.Interop.Kernel32.NVME_CRITICAL_WARNING.AvailableSpaceLow">
             <summary>
             If set to 1, then the available spare space has fallen below the threshold.
@@ -1667,6 +1932,45 @@
             <summary>
             Set SMART to offline automatically.
             </summary>
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.BytesRead">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.BytesWritten">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.ReadTime">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.WriteTime">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.IdleTime">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.ReadCount">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.WriteCount">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.QueueDepth">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.SplitCount">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.QueryTime">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.StorageDeviceNumber">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.StorageManagerName0">
+            <nodoc />
+        </member>
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.DISK_PERFORMANCE.StorageManagerName1">
+            <nodoc />
         </member>
         <member name="F:LibreHardwareMonitor.Interop.Kernel32.NVME_POWER_STATE_DESC.MP">
             <summary>
@@ -1973,7 +2277,11 @@
             byte 531
             </summary>
         </member>
-        <!-- Badly formed XML comment ignored for member "F:LibreHardwareMonitor.Interop.Kernel32.NVME_IDENTIFY_CONTROLLER_DATA.ACWU" -->
+        <member name="F:LibreHardwareMonitor.Interop.Kernel32.NVME_IDENTIFY_CONTROLLER_DATA.ACWU">
+            <summary>
+            byte 532:533 O - Atomic Compare and Write Unit (ACWU)
+            </summary>
+        </member>
         <member name="F:LibreHardwareMonitor.Interop.Kernel32.NVME_IDENTIFY_CONTROLLER_DATA.Reserved4">
             <summary>
             byte 534:535
@@ -2269,6 +2577,11 @@
         <member name="P:LibreHardwareMonitor.Software.OperatingSystem.IsUnix">
             <summary>
             Gets information about whether the current system is Unix based.
+            </summary>
+        </member>
+        <member name="P:LibreHardwareMonitor.Software.OperatingSystem.IsWindows8OrGreater">
+            <summary>
+            Returns true if the current system is Windows 8 or a more recent Windows version
             </summary>
         </member>
     </members>

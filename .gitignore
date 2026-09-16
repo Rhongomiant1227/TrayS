@@ -361,3 +361,21 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local maintenance tooling and generated release artifacts stay inside the
+# workspace and are uploaded to GitHub Releases separately. Do not commit the
+# toolchain, build intermediates, user configuration, or ZIP staging tree.
+.buildtools/
+Bin/
+dist/
+
+# Build helper downloads and generated import libraries are local cache files.
+# Keep the small PowerShell scripts and mscoree.def under version control.
+tools/*.exe
+tools/*.nupkg
+tools/*.lib
+tools/*.exp
+tools/*diag.log
+tools/build-tools-install.log
+tools/reference-assemblies/
+OpenHardwareMonitorApi/mscoree.lib

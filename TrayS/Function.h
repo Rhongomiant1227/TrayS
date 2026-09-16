@@ -77,10 +77,8 @@ typedef struct _ACCENT_POLICY
 } ACCENT_POLICY;
 typedef BOOL(WINAPI* pfnSetWindowCompositionAttribute)(HWND, struct _WINDOWCOMPOSITIONATTRIBDATA*);
 void		SetToCurrentPath();//设置进程路径为当前路径
-void		EmptyProcessMemory(DWORD pID=NULL);
 BOOL		RunProcess(LPTSTR szExe, const WCHAR* szCommandLine,HANDLE *pProcess=NULL);//运行程序
 BOOL		SetWindowCompositionAttribute(HWND hWnd, ACCENT_STATE mode, DWORD AlphaColor,BOOL bWin11=FALSE);//设置窗口WIN10风格
-BOOL		AutoRun(BOOL GetSet, BOOL bAutoRun, const WCHAR* szName);//读取、设置开机启动、关闭开机启动
 HICON		GetIcon(HWND hWnd, BOOL* bUWP, HWND* hUICoreWnd, int IconSize);//获取窗口图标
 BOOL		GetProcessFileName(DWORD dwProcessId, LPTSTR pszFileName, DWORD dwFileNameLength);//通过进程ID获取目录文件名
 BOOL		SetForeground(HWND hWnd);//强制设置窗口为前台
@@ -88,19 +86,26 @@ void		lstrlwr(WCHAR* wString, size_t SizeInWords);//字符串转小写
 wchar_t*	lstrstr(const wchar_t* str, const wchar_t* sub);//字符串查找
 BOOL		OpenWindowPath(HWND hWnd);//打开窗口所在的进程路径
 BOOL		OpenProcessPath(DWORD dwProcessId);//通过进程ID打开进程的路径
-BOOL		EnableDebugPrivilege(BOOL bEnableDebugPrivilege);//DEBUG提权
 int			GetScreenRect(HWND hWnd, LPRECT lpRect, BOOL bTray);//获取窗口所在的屏幕大小可减去任务栏
 BOOL		GetSetVolume(BOOL bSet, HWND hWnd, DWORD dwProcessId, float* fVolume, BOOL* bMute, BOOL IsMixer);//获取与设置进程音量
 
-void		InitService();//初始化服务参数
-BOOL		IsUserAdmin();//判断是以管理员权限运行
-BOOL		InstallService();//安装服务
-BOOL		UninstallService();//卸载服务
-BOOL		ServiceCtrlStart();//开启服务
-BOOL		ServiceCtrlStop();//停止服务
-DWORD		ServiceRunState();//服务运行状态
-BOOL		IsServiceInstalled();//服务是否已经安装
-void WINAPI ServiceMain(DWORD dwArgc, LPTSTR* lpszArgv);//服务主线程入口
+#if defined(TRAYS_ENABLE_LEGACY_SERVICE) && TRAYS_ENABLE_LEGACY_SERVICE
+void		EmptyProcessMemory(DWORD pID=NULL);
+BOOL		AutoRun(BOOL GetSet, BOOL bAutoRun, const WCHAR* szName);
+void		SetTaskScheduler(BOOL bDelAdd, const WCHAR* szName);
+BOOL		EnableDebugPrivilege(BOOL bEnableDebugPrivilege);
+BOOL		IsUserAdmin();
+void		InitService();
+BOOL		InstallService();
+BOOL		UninstallService();
+BOOL		ServiceCtrlStart();
+BOOL		ServiceCtrlStop();
+DWORD		ServiceRunState();
+BOOL		IsServiceInstalled();
+void WINAPI ServiceMain(DWORD dwArgc, LPTSTR* lpszArgv);
+ULONG		pCallNtPowerInformation(_In_ POWER_INFORMATION_LEVEL InformationLevel, _In_reads_bytes_opt_(InputBufferLength) PVOID InputBuffer, _In_ ULONG InputBufferLength, _Out_writes_bytes_opt_(OutputBufferLength) PVOID OutputBuffer, _In_ ULONG OutputBufferLength);
+#endif
+
 
 HRESULT		pSHLoadIndirectString(LPCWSTR pszSource, LPWSTR pszOutBuf, UINT cchOutBuf, void** ppvReserved);
 UINT		pDragQueryFile(HDROP hDrop, UINT iFile, LPTSTR lpszFile, UINT cch);
@@ -109,9 +114,10 @@ DWORD		pSHGetFileInfo(LPCTSTR pszPath, DWORD dwFileAttributes, SHFILEINFO FAR* p
 HRESULT		pSHDefExtractIcon(LPCWSTR pszIconFile, int iIndex, UINT uFlags, HICON* phiconLarge, HICON* phiconSmall, UINT nIconSize);
 HINSTANCE	pShellExecute(_In_opt_ HWND hwnd, _In_opt_ LPCWSTR lpOperation, _In_ LPCWSTR lpFile, _In_opt_ LPCWSTR lpParameters, _In_opt_ LPCWSTR lpDirectory, _In_ INT nShowCmd);
 BOOL		pShell_NotifyIcon(DWORD dwMessage, _In_ PNOTIFYICONDATAW lpData);
+#if defined(TRAYS_ENABLE_LEGACY_SERVICE) && TRAYS_ENABLE_LEGACY_SERVICE
 BOOL		pWTSQueryUserToken(ULONG SessionId, PHANDLE phToken);
 BOOL		pCreateEnvironmentBlock(_At_((PZZWSTR*)lpEnvironment, _Outptr_)LPVOID* lpEnvironment, _In_opt_ HANDLE  hToken, _In_ BOOL bInherit);
-ULONG		pCallNtPowerInformation(_In_ POWER_INFORMATION_LEVEL InformationLevel, _In_reads_bytes_opt_(InputBufferLength) PVOID InputBuffer, _In_ ULONG InputBufferLength, _Out_writes_bytes_opt_(OutputBufferLength) PVOID OutputBuffer, _In_ ULONG OutputBufferLength);
+#endif
 int			DrawShadowText(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat, COLORREF bColor, BOOL bYes);//绘制阴影文字
 DWORD		GetSystemUsesLightTheme();//获取系统主题颜色模式
 BOOL		pChangeWindowMessageFilter(UINT message, DWORD dwFlag);
@@ -161,3 +167,4 @@ typedef BOOL (WINAPI * pfnWinHttpReceiveResponse)(HINTERNET hRequest,LPVOID lpRe
 typedef BOOL (WINAPI * pfnWinHttpQueryDataAvailable)(HINTERNET hRequest,LPDWORD lpdwNumberOfBytesAvailable);
 typedef BOOL (WINAPI* pfnWinHttpReadData)(HINTERNET hRequest,LPVOID lpBuffer,DWORD dwNumberOfBytesToRead,LPDWORD lpdwNumberOfBytesRead);
 typedef BOOL (WINAPI* pfnWinHttpCloseHandle)(HINTERNET hInternet);
+typedef BOOL (WINAPI* pfnWinHttpSetTimeouts)(HINTERNET hInternet, int dwResolveTimeout, int dwConnectTimeout, int dwSendTimeout, int dwReceiveTimeout);

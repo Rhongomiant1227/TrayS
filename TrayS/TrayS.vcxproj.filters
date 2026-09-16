@@ -27,12 +27,6 @@
     <ClInclude Include="TrayS.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="OlsApiInit.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="OlsDef.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="adl_sdk.h">
       <Filter>头文件</Filter>
     </ClInclude>

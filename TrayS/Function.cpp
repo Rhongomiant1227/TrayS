@@ -1,10 +1,22 @@
 #include "Function.h"
-////////////////////////////////////////////////////¶¯Ì¬ÔËÐÐº¯Êý
+#include <cmath>
+#include <errno.h>
+#include <float.h>
+#include <stdlib.h>
+#include <string.h>
+
+static HMODULE LoadSystemLibrarySafeLocal(LPCWSTR moduleName)
+{
+	if (moduleName == NULL || moduleName[0] == L'\0')
+		return NULL;
+	return LoadLibraryExW(moduleName, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+}
+////////////////////////////////////////////////////ï¿½ï¿½Ì¬ï¿½ï¿½ï¿½Ðºï¿½ï¿½ï¿½
 HRESULT pSHLoadIndirectString(LPCWSTR pszSource, LPWSTR pszOutBuf, UINT cchOutBuf, void** ppvReserved)
 {
 	HRESULT ret = NULL;
 	typedef UINT(WINAPI* pfnSHLoadIndirectString)(LPCWSTR pszSource, LPWSTR pszOutBuf, UINT cchOutBuf, void** ppvReserved);
-	HMODULE hShell32 = LoadLibrary(L"Shlwapi.dll");
+	HMODULE hShell32 = LoadSystemLibrarySafeLocal(L"Shlwapi.dll");
 	if (hShell32)
 	{
 		pfnSHLoadIndirectString pSHLoadIndirectStringW = (pfnSHLoadIndirectString)GetProcAddress(hShell32, "SHLoadIndirectString");
@@ -20,7 +32,7 @@ UINT  pDragQueryFile(HDROP hDrop, UINT iFile, LPTSTR lpszFile, UINT cch)
 {
 	UINT ret = NULL;
 	typedef UINT(WINAPI* pfnDragQueryFile)(HDROP hDrop, UINT iFile, LPTSTR lpszFile, UINT cch);
-	HMODULE hShell32 = LoadLibrary(L"shell32.dll");
+	HMODULE hShell32 = LoadSystemLibrarySafeLocal(L"shell32.dll");
 	if (hShell32)
 	{
 		pfnDragQueryFile pDragQueryFileW = (pfnDragQueryFile)GetProcAddress(hShell32, "DragQueryFileW");
@@ -37,7 +49,7 @@ HICON  pExtractIcon(HINSTANCE hInst, LPCTSTR lpszExeFileName, UINT nIconIndex)
 	//IExtractIcon
 	HICON ret = NULL;
 	typedef HICON(WINAPI* pfnExtractIcon)(HINSTANCE hInst, LPCTSTR lpszExeFileName, UINT nIconIndex);
-	HMODULE hShell32 = LoadLibrary(L"shell32.dll");
+	HMODULE hShell32 = LoadSystemLibrarySafeLocal(L"shell32.dll");
 	if (hShell32)
 	{
 		pfnExtractIcon pExtractIconW = (pfnExtractIcon)GetProcAddress(hShell32, "ExtractIconW");
@@ -54,7 +66,7 @@ DWORD pSHGetFileInfo(LPCTSTR pszPath, DWORD dwFileAttributes, SHFILEINFO FAR* ps
 	//IExtractIcon
 	DWORD ret = NULL;
 	typedef DWORD(WINAPI* pfnSHGetFileInfo)(LPCTSTR pszPath, DWORD dwFileAttributes, SHFILEINFO FAR* psfi, UINT cbFileInfo, UINT uFlags);
-	HMODULE hShell32 = LoadLibrary(L"shell32.dll");
+	HMODULE hShell32 = LoadSystemLibrarySafeLocal(L"shell32.dll");
 	if (hShell32)
 	{
 		pfnSHGetFileInfo pSHGetFileInfoW = (pfnSHGetFileInfo)GetProcAddress(hShell32, "SHGetFileInfoW");
@@ -72,7 +84,7 @@ HRESULT  pSHDefExtractIcon(LPCWSTR pszIconFile,int iIndex,UINT uFlags,HICON* phi
 	//IExtractIcon
 	HRESULT ret = NULL;
 	typedef HRESULT(WINAPI* pfnSHDefExtractIcon)(LPCWSTR pszIconFile, int iIndex, UINT uFlags, HICON* phiconLarge, HICON* phiconSmall, UINT nIconSize);
-	HMODULE hShell32 = LoadLibrary(L"shell32.dll");
+	HMODULE hShell32 = LoadSystemLibrarySafeLocal(L"shell32.dll");
 	if (hShell32)
 	{
 		pfnSHDefExtractIcon SHDefExtractIconW = (pfnSHDefExtractIcon)GetProcAddress(hShell32, "SHDefExtractIconW");
@@ -88,7 +100,7 @@ HINSTANCE pShellExecute(_In_opt_ HWND hwnd, _In_opt_ LPCWSTR lpOperation, _In_ L
 {
 	HINSTANCE hInstance = NULL;
 	typedef HINSTANCE(WINAPI* pfnShellExecute)(_In_opt_ HWND hwnd, _In_opt_ LPCWSTR lpOperation, _In_ LPCWSTR lpFile, _In_opt_ LPCWSTR lpParameters, _In_opt_ LPCWSTR lpDirectory, _In_ INT nShowCmd);
-	HMODULE hShell32 = LoadLibrary(L"shell32.dll");
+	HMODULE hShell32 = LoadSystemLibrarySafeLocal(L"shell32.dll");
 	if (hShell32)
 	{
 		pfnShellExecute pShellExecuteW = (pfnShellExecute)GetProcAddress(hShell32, "ShellExecuteW");
@@ -101,7 +113,7 @@ HINSTANCE pShellExecute(_In_opt_ HWND hwnd, _In_opt_ LPCWSTR lpOperation, _In_ L
 BOOL pShell_NotifyIcon(DWORD dwMessage, _In_ PNOTIFYICONDATAW lpData)
 {
 	typedef BOOL(WINAPI* pfnShell_NotifyIcon)(DWORD dwMessage, _In_ PNOTIFYICONDATAW lpData);
-	HMODULE hShell32 = LoadLibrary(L"shell32.dll");
+	HMODULE hShell32 = LoadSystemLibrarySafeLocal(L"shell32.dll");
 	BOOL ret = FALSE;
 	if (hShell32)
 	{
@@ -112,11 +124,13 @@ BOOL pShell_NotifyIcon(DWORD dwMessage, _In_ PNOTIFYICONDATAW lpData)
 	}
 	return ret;
 }
+#if defined(TRAYS_ENABLE_LEGACY_SERVICE)
+#if TRAYS_ENABLE_LEGACY_SERVICE
 BOOL pWTSQueryUserToken(ULONG SessionId, PHANDLE phToken)
 {
 	BOOL ret = FALSE;
 	typedef BOOL(WINAPI* pfnWTSQueryUserToken)(ULONG SessionId, PHANDLE phToken);
-	HMODULE hWTSAPI32 = LoadLibrary(L"wtsapi32.dll");
+	HMODULE hWTSAPI32 = LoadSystemLibrarySafeLocal(L"wtsapi32.dll");
 	if (hWTSAPI32)
 	{
 		pfnWTSQueryUserToken WTSQueryUserToken = (pfnWTSQueryUserToken)GetProcAddress(hWTSAPI32, "WTSQueryUserToken");
@@ -130,7 +144,7 @@ BOOL pCreateEnvironmentBlock(_At_((PZZWSTR*)lpEnvironment, _Outptr_)LPVOID* lpEn
 {
 	BOOL ret = FALSE;
 	typedef BOOL(WINAPI* pfnCreateEnvironmentBlock)(_At_((PZZWSTR*)lpEnvironment, _Outptr_)LPVOID* lpEnvironment, _In_opt_ HANDLE  hToken, _In_ BOOL bInherit);
-	HMODULE hUserenv = LoadLibrary(L"userenv.dll");
+	HMODULE hUserenv = LoadSystemLibrarySafeLocal(L"userenv.dll");
 	if (hUserenv)
 	{
 		pfnCreateEnvironmentBlock CreateEnvironmentBlock = (pfnCreateEnvironmentBlock)GetProcAddress(hUserenv, "CreateEnvironmentBlock");
@@ -144,7 +158,7 @@ ULONG pCallNtPowerInformation(_In_ POWER_INFORMATION_LEVEL InformationLevel, _In
 {
 	ULONG ret = -1;
 	typedef BOOL(WINAPI* pfnCallNtPowerInformation)(_In_ POWER_INFORMATION_LEVEL InformationLevel, _In_reads_bytes_opt_(InputBufferLength) PVOID InputBuffer, _In_ ULONG InputBufferLength, _Out_writes_bytes_opt_(OutputBufferLength) PVOID OutputBuffer, _In_ ULONG OutputBufferLength);
-	HMODULE hPowrptof = LoadLibrary(L"powrprof.dll");
+	HMODULE hPowrptof = LoadSystemLibrarySafeLocal(L"powrprof.dll");
 	if (hPowrptof)
 	{
 		pfnCallNtPowerInformation CallNtPowerInformation = (pfnCallNtPowerInformation)GetProcAddress(hPowrptof, "CallNtPowerInformation");
@@ -154,7 +168,9 @@ ULONG pCallNtPowerInformation(_In_ POWER_INFORMATION_LEVEL InformationLevel, _In
 	}
 	return ret;
 }
-BOOL LaunchAppIntoDifferentSession(WCHAR* szExe, WCHAR* szDir, WCHAR* szLine)//ÒÔSYSTEMÔËÐÐ³ÌÐò²¢¿ÉÒÔ½»»¥´°¿Ú
+#if defined(TRAYS_ENABLE_LEGACY_SERVICE)
+#if TRAYS_ENABLE_LEGACY_SERVICE
+BOOL LaunchAppIntoDifferentSession(WCHAR* szExe, WCHAR* szDir, WCHAR* szLine)//ï¿½ï¿½SYSTEMï¿½ï¿½ï¿½Ð³ï¿½ï¿½ò²¢¿ï¿½ï¿½Ô½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 {
 	PROCESS_INFORMATION pi;
 	STARTUPINFO si;
@@ -290,12 +306,14 @@ BOOL LaunchAppIntoDifferentSession(WCHAR* szExe, WCHAR* szDir, WCHAR* szLine)//Ò
 	}
 	return bResult;
 }
-//////////////////////////////////////////////////////////////////////////·þÎñº¯Êý
+#endif
+#endif
+//////////////////////////////////////////////////////////////////////////ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 BOOL bInstallService;
 SERVICE_STATUS_HANDLE hServiceStatus;
 SERVICE_STATUS status;
 HANDLE hEvent = INVALID_HANDLE_VALUE;
-void InitService()//³õÊ¼»¯·þÎñ²ÎÊý
+void InitService()//ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 {
 	hServiceStatus = NULL;
 	status.dwServiceType = SERVICE_WIN32_OWN_PROCESS | SERVICE_INTERACTIVE_PROCESS;
@@ -306,14 +324,14 @@ void InitService()//³õÊ¼»¯·þÎñ²ÎÊý
 	status.dwCheckPoint = 0;
 	status.dwWaitHint = 0;
 }
-void WINAPI ServiceStrl(DWORD dwOpcode)//·þÎñ¿ØÖÆº¯Êý
+void WINAPI ServiceStrl(DWORD dwOpcode)//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æºï¿½ï¿½ï¿½
 {
 	switch (dwOpcode)
 	{
 	case SERVICE_CONTROL_STOP:
 		status.dwCurrentState = SERVICE_STOP_PENDING;
 		SetServiceStatus(hServiceStatus, &status);
-		//¸æËß·þÎñÏß³ÌÍ£Ö¹¹¤×÷
+		//ï¿½ï¿½ï¿½ß·ï¿½ï¿½ï¿½ï¿½ß³ï¿½Í£Ö¹ï¿½ï¿½ï¿½ï¿½
 		::SetEvent(hEvent);
 		break;
 	case SERVICE_CONTROL_PAUSE:
@@ -328,19 +346,19 @@ void WINAPI ServiceStrl(DWORD dwOpcode)//·þÎñ¿ØÖÆº¯Êý
 		break;
 	}
 }
-void WINAPI ServiceMain(DWORD dwArgc, LPTSTR* lpszArgv)//·þÎñÖ÷Ïß³ÌÈë¿Ú
+void WINAPI ServiceMain(DWORD dwArgc, LPTSTR* lpszArgv)//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ß³ï¿½ï¿½ï¿½ï¿½
 {
 	// Register the control request handler
 	status.dwCurrentState = SERVICE_START_PENDING;
 	status.dwControlsAccepted = SERVICE_ACCEPT_STOP;
-	//×¢²á·þÎñ¿ØÖÆ
+	//×¢ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 	hServiceStatus = RegisterServiceCtrlHandler(lpServiceName, ServiceStrl);
 	if (hServiceStatus == NULL)
 	{
 		return;
 	}
 	SetServiceStatus(hServiceStatus, &status);
-	//ÈçÏÂ´úÂë¿ÉÒÔÎªÆô¶¯·þÎñÇ°µÄ×¼±¸¹¤×÷
+	//ï¿½ï¿½ï¿½Â´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ç°ï¿½ï¿½×¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 	hEvent = ::CreateEvent(NULL, TRUE, FALSE, NULL);
 	if (hEvent == NULL)
 	{
@@ -348,15 +366,15 @@ void WINAPI ServiceMain(DWORD dwArgc, LPTSTR* lpszArgv)//·þÎñÖ÷Ïß³ÌÈë¿Ú
 		SetServiceStatus(hServiceStatus, &status);
 		return;
 	}
-	//¸ü¸Ä·þÎñ×´Ì¬ÎªÆô¶¯
+	//ï¿½ï¿½ï¿½Ä·ï¿½ï¿½ï¿½×´Ì¬Îªï¿½ï¿½ï¿½ï¿½
 	status.dwWin32ExitCode = S_OK;
 	status.dwCheckPoint = 0;
 	status.dwWaitHint = 0;
 	status.dwCurrentState = SERVICE_RUNNING;
 	SetServiceStatus(hServiceStatus, &status);
-	//µÈ´ýÓÃ»§Ñ¡ÔñÍ£Ö¹·þÎñ£¬
-	//µ±È»ÄãÒ²¿ÉÒÔ°ÑÄãµÄ·þÎñ´úÂëÓÃÏß³ÌÀ´Ö´ÐÐ£¬
-	//´ËÊ±ÕâÀïÖ»ÐèµÈ´ýÏß³Ì½áÊø¼È¿É¡£
+	//ï¿½È´ï¿½ï¿½Ã»ï¿½Ñ¡ï¿½ï¿½Í£Ö¹ï¿½ï¿½ï¿½ï¿½
+	//ï¿½ï¿½È»ï¿½ï¿½Ò²ï¿½ï¿½ï¿½Ô°ï¿½ï¿½ï¿½Ä·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ß³ï¿½ï¿½ï¿½Ö´ï¿½Ð£ï¿½
+	//ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½È´ï¿½ï¿½ß³Ì½ï¿½ï¿½ï¿½ï¿½È¿É¡ï¿½
 //	CloseHandle(CreateFile(L"d:\\topc.txt", GENERIC_READ, FILE_SHARE_READ, NULL, CREATE_ALWAYS, NULL, NULL));
 	WCHAR szExe[MAX_PATH];
 	HINSTANCE hInst = GetModuleHandle(NULL);
@@ -369,18 +387,18 @@ void WINAPI ServiceMain(DWORD dwArgc, LPTSTR* lpszArgv)//·þÎñÖ÷Ïß³ÌÈë¿Ú
 	while (WaitForSingleObject(hEvent, 1000) != WAIT_OBJECT_0)
 	{
 	}
-	//Í£Ö¹·þÎñ
+	//Í£Ö¹ï¿½ï¿½ï¿½ï¿½
 	status.dwCurrentState = SERVICE_STOPPED;
 	SetServiceStatus(hServiceStatus, &status);
 }
-DWORD ServiceRunState()//·þÎñÔËÐÐ×´Ì¬
+DWORD ServiceRunState()//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×´Ì¬
 {
 	BOOL bResult = FALSE;
-	//´ò¿ª·þÎñ¿ØÖÆ¹ÜÀíÆ÷
+	//ï¿½ò¿ª·ï¿½ï¿½ï¿½ï¿½ï¿½Æ¹ï¿½ï¿½ï¿½ï¿½ï¿½
 	SC_HANDLE hSCM = ::OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
 	if (hSCM != NULL)
 	{
-		//´ò¿ª·þÎñ
+		//ï¿½ò¿ª·ï¿½ï¿½ï¿½
 		SC_HANDLE hService = ::OpenService(hSCM, lpServiceName, SERVICE_QUERY_STATUS);
 		if (hService != NULL)
 		{
@@ -393,14 +411,14 @@ DWORD ServiceRunState()//·þÎñÔËÐÐ×´Ì¬
 	}
 	return bResult;
 }
-BOOL IsServiceInstalled()//·þÎñÊÇ·ñÒÑ¾­°²×°
+BOOL IsServiceInstalled()//ï¿½ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½Ñ¾ï¿½ï¿½ï¿½×°
 {
 	BOOL bResult = FALSE;
-	//´ò¿ª·þÎñ¿ØÖÆ¹ÜÀíÆ÷
+	//ï¿½ò¿ª·ï¿½ï¿½ï¿½ï¿½ï¿½Æ¹ï¿½ï¿½ï¿½ï¿½ï¿½
 	SC_HANDLE hSCM = ::OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
 	if (hSCM != NULL)
 	{
-		//´ò¿ª·þÎñ
+		//ï¿½ò¿ª·ï¿½ï¿½ï¿½
 		SC_HANDLE hService = ::OpenService(hSCM, lpServiceName, SERVICE_QUERY_CONFIG);
 		if (hService != NULL)
 		{
@@ -411,11 +429,11 @@ BOOL IsServiceInstalled()//·þÎñÊÇ·ñÒÑ¾­°²×°
 	}
 	return bResult;
 }
-BOOL InstallService()//°²×°·þÎñ
+BOOL InstallService()//ï¿½ï¿½×°ï¿½ï¿½ï¿½ï¿½
 {
 	if (IsServiceInstalled())
 		return TRUE;
-	//´ò¿ª·þÎñ¿ØÖÆ¹ÜÀíÆ÷
+	//ï¿½ò¿ª·ï¿½ï¿½ï¿½ï¿½ï¿½Æ¹ï¿½ï¿½ï¿½ï¿½ï¿½
 	SC_HANDLE hSCM = ::OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
 	if (hSCM == NULL)
 	{
@@ -424,14 +442,14 @@ BOOL InstallService()//°²×°·þÎñ
 	// Get the executable file path
 	TCHAR szFilePath[MAX_PATH];
 	::GetModuleFileName(NULL, szFilePath, MAX_PATH);
-	//´´½¨·þÎñ
+	//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 	SC_HANDLE hService = ::CreateService(
 		hSCM,
 		lpServiceName,
 		lpServiceName,
 		SERVICE_ALL_ACCESS,
 		SERVICE_WIN32_OWN_PROCESS | SERVICE_INTERACTIVE_PROCESS,
-		SERVICE_AUTO_START, //Èç¹ûÎªSERVICE_DEMAND_STARTÔò±íÊ¾´Ë·þÎñÐèÊÖ¹¤Æô¶¯
+		SERVICE_AUTO_START, //ï¿½ï¿½ï¿½ÎªSERVICE_DEMAND_STARTï¿½ï¿½ï¿½Ê¾ï¿½Ë·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¹ï¿½ï¿½ï¿½ï¿½ï¿½
 		SERVICE_ERROR_NORMAL,
 		szFilePath,
 		NULL,
@@ -448,7 +466,7 @@ BOOL InstallService()//°²×°·þÎñ
 	::CloseServiceHandle(hSCM);
 	return TRUE;
 }
-BOOL UninstallService()//Ð¶ÔØ·þÎñ
+BOOL UninstallService()//Ð¶ï¿½Ø·ï¿½ï¿½ï¿½
 {
 	if (!IsServiceInstalled())
 		return TRUE;
@@ -465,7 +483,7 @@ BOOL UninstallService()//Ð¶ÔØ·þÎñ
 	}
 	SERVICE_STATUS status;
 	::ControlService(hService, SERVICE_CONTROL_STOP, &status);
-	//É¾³ý·þÎñ
+	//É¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 	BOOL bDelete = ::DeleteService(hService);
 	::CloseServiceHandle(hService);
 	::CloseServiceHandle(hSCM);
@@ -473,7 +491,7 @@ BOOL UninstallService()//Ð¶ÔØ·þÎñ
 		return TRUE;
 	return FALSE;
 }
-BOOL ServiceCtrlStart()//¿ªÆô·þÎñ
+BOOL ServiceCtrlStart()//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 {
 	BOOL bRet;
 	SC_HANDLE hSCM;
@@ -488,7 +506,7 @@ BOOL ServiceCtrlStart()//¿ªÆô·þÎñ
 			TCHAR szFilePath[MAX_PATH];
 			::GetModuleFileName(NULL, szFilePath, MAX_PATH);
 			ChangeServiceConfig(hService, SERVICE_WIN32_OWN_PROCESS | SERVICE_INTERACTIVE_PROCESS, SERVICE_AUTO_START, SERVICE_NO_CHANGE, szFilePath, NULL, NULL, NULL, NULL, NULL, NULL);
-			//¿ªÊ¼Service
+			//ï¿½ï¿½Ê¼Service
 			bRet = StartService(hService, 0, NULL);
 			CloseServiceHandle(hService);
 		}
@@ -504,7 +522,7 @@ BOOL ServiceCtrlStart()//¿ªÆô·þÎñ
 	}
 	return bRet;
 }
-BOOL ServiceCtrlStop()//Í£Ö¹·þÎñ
+BOOL ServiceCtrlStop()//Í£Ö¹ï¿½ï¿½ï¿½ï¿½
 {
 	BOOL bRet;
 	SC_HANDLE hSCM;
@@ -539,7 +557,9 @@ BOOL ServiceCtrlStop()//Í£Ö¹·þÎñ
 	}
 	return bRet;
 }
-int GetScreenRect(HWND hWnd, LPRECT lpRect, BOOL bTray)//»ñÈ¡´°¿ÚËùÔÚµÄÆÁÄ»´óÐ¡¿É¼õÈ¥ÈÎÎñÀ¸
+#endif
+#endif
+int GetScreenRect(HWND hWnd, LPRECT lpRect, BOOL bTray)//ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Úµï¿½ï¿½ï¿½Ä»ï¿½ï¿½Ð¡ï¿½É¼ï¿½È¥ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 {
 	HMONITOR hMon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
 	MONITORINFO mi;
@@ -585,7 +605,7 @@ typedef struct _PROCESS_BASIC_INFORMATION
 	ULONG InheritedFromUniqueProcessId;
 }PROCESS_BASIC_INFORMATION;
 typedef LONG(WINAPI* pfnNtQueryInformationProcess)(HANDLE, UINT, PVOID, ULONG, PULONG);
-DWORD GetParentProcessID(DWORD dwProcessId)//»ñÈ¡¸¸½ø³ÌID
+DWORD GetParentProcessID(DWORD dwProcessId)//ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ID
 {
 	if (dwProcessId == -1)
 		return -1;
@@ -609,7 +629,7 @@ DWORD GetParentProcessID(DWORD dwProcessId)//»ñÈ¡¸¸½ø³ÌID
 	CloseHandle(hProcess);
 	return dwParentPID;
 }
-BOOL GetSetVolume(BOOL bSet, HWND hWnd, DWORD dwProcessId, float* fVolume, BOOL* bMute, BOOL IsMixer)///////////////////////////»ñÈ¡/ÉèÖÃ´°¿ÚÒôÁ¿
+BOOL GetSetVolume(BOOL bSet, HWND hWnd, DWORD dwProcessId, float* fVolume, BOOL* bMute, BOOL IsMixer)///////////////////////////ï¿½ï¿½È¡/ï¿½ï¿½ï¿½Ã´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 {
 	DWORD dwCProcessId = -1;
 	if (hWnd)
@@ -714,7 +734,9 @@ BOOL GetSetVolume(BOOL bSet, HWND hWnd, DWORD dwProcessId, float* fVolume, BOOL*
 	CoUninitialize();
 	return ret;
 }
-BOOL EnableDebugPrivilege(BOOL bEnableDebugPrivilege)//DEBUGÌáÈ¨
+#if defined(TRAYS_ENABLE_LEGACY_SERVICE)
+#if TRAYS_ENABLE_LEGACY_SERVICE
+BOOL EnableDebugPrivilege(BOOL bEnableDebugPrivilege)//DEBUGï¿½ï¿½È¨
 {
 	HANDLE hToken;
 	TOKEN_PRIVILEGES tp;
@@ -737,7 +759,11 @@ BOOL EnableDebugPrivilege(BOOL bEnableDebugPrivilege)//DEBUGÌáÈ¨
 	}
 	return FALSE;
 }
-BOOL IsUserAdmin()//ÅÐ¶ÏÊÇÒÔ¹ÜÀíÔ±È¨ÏÞÔËÐÐ
+#endif
+#endif
+#if defined(TRAYS_ENABLE_LEGACY_SERVICE)
+#if TRAYS_ENABLE_LEGACY_SERVICE
+BOOL IsUserAdmin()//ï¿½Ð¶ï¿½ï¿½ï¿½ï¿½Ô¹ï¿½ï¿½ï¿½Ô±È¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 {
 	//	IsUserAnAdmin();
 	BOOL b;
@@ -754,7 +780,9 @@ BOOL IsUserAdmin()//ÅÐ¶ÏÊÇÒÔ¹ÜÀíÔ±È¨ÏÞÔËÐÐ
 	}
 	return(b);
 }
-void SetToCurrentPath()////////////////////////////////////ÉèÖÃµ±Ç°³ÌÐòÎªµ±Ç°Ä¿Â¼
+#endif
+#endif
+void SetToCurrentPath()////////////////////////////////////ï¿½ï¿½ï¿½Ãµï¿½Ç°ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½Ç°Ä¿Â¼
 {
 	WCHAR szDir[MAX_PATH];
 	GetModuleFileName(NULL, szDir, MAX_PATH);
@@ -769,12 +797,13 @@ void SetToCurrentPath()////////////////////////////////////ÉèÖÃµ±Ç°³ÌÐòÎªµ±Ç°Ä¿Â
 		}
 	}
 }
-BOOL RunProcess(LPTSTR szExe, const WCHAR* szCommandLine,HANDLE *pProcess)/////////////////////////////////ÔËÐÐ³ÌÐò
+BOOL RunProcess(LPTSTR szExe, const WCHAR* szCommandLine,HANDLE *pProcess)/////////////////////////////////ï¿½ï¿½ï¿½Ð³ï¿½ï¿½ï¿½
 {
 	BOOL ret = FALSE;
-	STARTUPINFO StartInfo;
-	PROCESS_INFORMATION procStruct;
-	memset(&StartInfo, 0, sizeof(STARTUPINFO));
+	STARTUPINFO StartInfo = {};
+	PROCESS_INFORMATION procStruct = {};
+	if (pProcess != NULL)
+		*pProcess = NULL;
 	StartInfo.cb = sizeof(STARTUPINFO);
 	WCHAR* sz;
 	WCHAR szName[MAX_PATH];
@@ -790,25 +819,30 @@ BOOL RunProcess(LPTSTR szExe, const WCHAR* szCommandLine,HANDLE *pProcess)//////
 	WCHAR szLine[MAX_PATH];
 	szLine[0] = L'\0';
 	if(szCommandLine)
-		lstrcpy(szLine, szCommandLine);
-	ret = CreateProcess(sz,// RUN_TEST.batÎ»ÓÚ¹¤³ÌËùÔÚÄ¿Â¼ÏÂ
+		lstrcpyn(szLine, szCommandLine, ARRAYSIZE(szLine));
+	ret = CreateProcess(sz,// RUN_TEST.batÎ»ï¿½Ú¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä¿Â¼ï¿½ï¿½
 		szLine,
 		NULL,
 		NULL,
 		FALSE,
-		NULL,// ÕâÀï²»Îª¸Ã½ø³Ì´´½¨Ò»¸ö¿ØÖÆÌ¨´°¿Ú
+		NULL,// ï¿½ï¿½ï¿½ï²»Îªï¿½Ã½ï¿½ï¿½Ì´ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì¨ï¿½ï¿½ï¿½ï¿½
 		NULL,
 		NULL,
 		&StartInfo, &procStruct);
-	if (pProcess == NULL)
-		CloseHandle(procStruct.hProcess);
-	else
-		*pProcess = procStruct.hProcess;
-	CloseHandle(procStruct.hThread);
+	if (ret)
+	{
+		if (pProcess == NULL)
+			CloseHandle(procStruct.hProcess);
+		else
+			*pProcess = procStruct.hProcess;
+		CloseHandle(procStruct.hThread);
+	}
 //	SetTimer(hMain, 11, 1000, NULL);
 	return ret;
 }
-void SetTaskScheduler(BOOL bDelAdd, const WCHAR* szName)///////////////////////////////////ÉèÖÃ¿ª»úÈÎÎñ¼Æ»®/É¾³ýÈÎÎñ¼Æ»®
+#if defined(TRAYS_ENABLE_LEGACY_SERVICE)
+#if TRAYS_ENABLE_LEGACY_SERVICE
+void SetTaskScheduler(BOOL bDelAdd, const WCHAR* szName)///////////////////////////////////ï¿½ï¿½ï¿½Ã¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ»ï¿½/É¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ»ï¿½
 {
 	SetToCurrentPath();
 	WCHAR szDelSchtasks[MAX_PATH];
@@ -862,7 +896,7 @@ void SetTaskScheduler(BOOL bDelAdd, const WCHAR* szName)////////////////////////
 		//		RunProcess(szRunSchtasks);
 	}
 }
-BOOL AutoRun(BOOL GetSet, BOOL bAutoRun,const WCHAR* szName)//¶ÁÈ¡¡¢ÉèÖÃ¿ª»úÆô¶¯¡¢¹Ø±Õ¿ª»úÆô¶¯
+BOOL AutoRun(BOOL GetSet, BOOL bAutoRun,const WCHAR* szName)//ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½Ã¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø±Õ¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 {
 //	UninstallService();
 	BOOL ret = FALSE;
@@ -980,7 +1014,9 @@ BOOL AutoRun(BOOL GetSet, BOOL bAutoRun,const WCHAR* szName)//¶ÁÈ¡¡¢ÉèÖÃ¿ª»úÆô¶¯
 	}
 	return ret;
 }
-BOOL SetWindowCompositionAttribute(HWND hWnd, ACCENT_STATE mode, DWORD AlphaColor,BOOL bWin11)//ÉèÖÃ´°¿ÚWIN10·ç¸ñ
+#endif
+#endif
+BOOL SetWindowCompositionAttribute(HWND hWnd, ACCENT_STATE mode, DWORD AlphaColor,BOOL bWin11)//ï¿½ï¿½ï¿½Ã´ï¿½ï¿½ï¿½WIN10ï¿½ï¿½ï¿½
 {
 	pfnSetWindowCompositionAttribute pSetWindowCompositionAttribute = NULL;
 	if (mode == ACCENT_DISABLED)
@@ -1034,7 +1070,7 @@ BOOL GetWindowCompositionAttribute(HWND hWnd, ACCENT_POLICY * accent)
 	return ret;
 }
 */
-BOOL GetProcessFileName(DWORD dwProcessId, LPTSTR pszFileName, DWORD dwFileNameLength)////////////////////////Í¨¹ýID»ñÈ¡³ÌÐòÂ·¾¶ÎÄ¼þÃû
+BOOL GetProcessFileName(DWORD dwProcessId, LPTSTR pszFileName, DWORD dwFileNameLength)////////////////////////Í¨ï¿½ï¿½IDï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½Â·ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½
 {
 	BOOL bResult = false;
 	HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, dwProcessId);
@@ -1042,7 +1078,7 @@ BOOL GetProcessFileName(DWORD dwProcessId, LPTSTR pszFileName, DWORD dwFileNameL
 		hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, dwProcessId);
 	if (hProc)
 	{
-		HMODULE hPSAPI = LoadLibrary(L"psapi.dll");
+		HMODULE hPSAPI = LoadSystemLibrarySafeLocal(L"psapi.dll");
 		if (hPSAPI)
 		{
 			typedef DWORD(WINAPI* pfnGetModuleFileNameEx)(HANDLE hProcess, HMODULE hModule, LPTSTR lpFilename, DWORD nSize);
@@ -1066,7 +1102,7 @@ BOOL GetProcessFileName(DWORD dwProcessId, LPTSTR pszFileName, DWORD dwFileNameL
 	}
 	return bResult;
 }
-bool GetFileNameFromWindowHandle(HWND hWnd, LPTSTR lpFileName, DWORD dwFileNameLength)////////////////ÓÃ´°¿Ú»ñÈ¡³ÌÐòÂ·¾¶ÎÄ¼þÃû
+bool GetFileNameFromWindowHandle(HWND hWnd, LPTSTR lpFileName, DWORD dwFileNameLength)////////////////ï¿½Ã´ï¿½ï¿½Ú»ï¿½È¡ï¿½ï¿½ï¿½ï¿½Â·ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½
 {
 	bool bResult = false;
 	DWORD dwProcessId = 0;
@@ -1101,7 +1137,7 @@ typedef struct PACKAGE_ID {
 #define ARRAY_SIZEOF(array) (sizeof(array)/sizeof(array[0]))
 
 /*
-HICON GetUWPAppIcon(HWND hWnd, UINT uiIconSize = 32)////////////////////////////////////»ñÈ¡UWP³ÌÐòÍ¼±ê
+HICON GetUWPAppIcon(HWND hWnd, UINT uiIconSize = 32)////////////////////////////////////ï¿½ï¿½È¡UWPï¿½ï¿½ï¿½ï¿½Í¼ï¿½ï¿½
 {
 	HICON hIcon = NULL;
 	static LONG(WINAPI * pGetPackageFullName)(HANDLE, UINT32*, PWSTR);
@@ -1295,7 +1331,7 @@ HICON GetIcon(HWND hWnd, BOOL* bUWP, HWND* hUICoreWnd,int IconSize)
 	return hIcon;
 }
 */
-BOOL SetForeground(HWND hWnd)//¼¤»î´°¿ÚÎªÇ°Ì¨
+BOOL SetForeground(HWND hWnd)//ï¿½ï¿½ï¿½î´°ï¿½ï¿½ÎªÇ°Ì¨
 {
 	bool bResult = false;
 	bool bHung = IsHungAppWindow(hWnd) != 0;
@@ -1329,9 +1365,9 @@ BOOL SetForeground(HWND hWnd)//¼¤»î´°¿ÚÎªÇ°Ì¨
 	}
 	return bResult;
 	/*
-		int tIdCur = GetWindowThreadProcessId(GetForegroundWindow(), NULL);//»ñÈ¡µ±Ç°´°¿Ú¾ä±úµÄÏß³ÌID
-		int tIdCurProgram = GetWindowThreadProcessId(hWnd,NULL);//»ñÈ¡µ±Ç°ÔËÐÐ³ÌÐòÏß³ÌID
-		BOOL ret=AttachThreadInput(tIdCur, tIdCurProgram, 1);//ÊÇ·ñÄÜ³É¹¦ºÍµ±Ç°×ÔÉí½ø³ÌËù¸½¼ÓµÄÊäÈëÉÏÏÂÎÄÓÐ¹Ø;
+		int tIdCur = GetWindowThreadProcessId(GetForegroundWindow(), NULL);//ï¿½ï¿½È¡ï¿½ï¿½Ç°ï¿½ï¿½ï¿½Ú¾ï¿½ï¿½ï¿½ï¿½ï¿½ß³ï¿½ID
+		int tIdCurProgram = GetWindowThreadProcessId(hWnd,NULL);//ï¿½ï¿½È¡ï¿½ï¿½Ç°ï¿½ï¿½ï¿½Ð³ï¿½ï¿½ï¿½ï¿½ß³ï¿½ID
+		BOOL ret=AttachThreadInput(tIdCur, tIdCurProgram, 1);//ï¿½Ç·ï¿½ï¿½Ü³É¹ï¿½ï¿½Íµï¿½Ç°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Óµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð¹ï¿½;
 		SetForegroundWindow(hWnd);
 		AttachThreadInput(tIdCur, tIdCurProgram, 0);
 		return ret;
@@ -1346,7 +1382,7 @@ void lstrlwr(WCHAR* wString, size_t SizeInWords)
 	}
 }
 
-BOOL OpenProcessPath(DWORD dwProcessId)//Í¨¹ý½ø³ÌID´ò¿ª½ø³ÌµÄÂ·¾¶
+BOOL OpenProcessPath(DWORD dwProcessId)//Í¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½IDï¿½ò¿ª½ï¿½ï¿½Ìµï¿½Â·ï¿½ï¿½
 {
 	BOOL ret = FALSE;
 	WCHAR szExplorer[MAX_PATH] = L"/select,";
@@ -1363,7 +1399,7 @@ BOOL OpenProcessPath(DWORD dwProcessId)//Í¨¹ý½ø³ÌID´ò¿ª½ø³ÌµÄÂ·¾¶
 	}
 	return ret;
 }
-BOOL OpenWindowPath(HWND hWnd)//////////////Í¨¹ý´°¿Ú´ò¿ª½ø³ÌµÄÂ·¾¶
+BOOL OpenWindowPath(HWND hWnd)//////////////Í¨ï¿½ï¿½ï¿½ï¿½ï¿½Ú´ò¿ª½ï¿½ï¿½Ìµï¿½Â·ï¿½ï¿½
 {
 	BOOL ret = FALSE;
 	DWORD dwProcessId;
@@ -1372,7 +1408,7 @@ BOOL OpenWindowPath(HWND hWnd)//////////////Í¨¹ý´°¿Ú´ò¿ª½ø³ÌµÄÂ·¾¶
 		ret = OpenProcessPath(dwProcessId);
 	return ret;
 }
-HICON OpenProcessIcon(DWORD dProcessID, int cx)//Í¨¹ý½ø³ÌID»ñÈ¡ICON
+HICON OpenProcessIcon(DWORD dProcessID, int cx)//Í¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½IDï¿½ï¿½È¡ICON
 {
 	HICON ret = NULL;
 	WCHAR szExe[MAX_PATH];
@@ -1402,7 +1438,7 @@ HICON GetIconForCSIDL(int csidl)
 	}
 	return 0;
 }
-int DrawShadowText(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat,COLORREF bColor,BOOL bYes)//»æÖÆÒõÓ°ÎÄ×Ö
+int DrawShadowText(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat,COLORREF bColor,BOOL bYes)//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó°ï¿½ï¿½ï¿½ï¿½
 {
 //	COLORREF cColor = GetTextColor(hDC);
 //	return DrawShadowText(hDC, lpString, nCount, lpRect, uFormat, cColor, RGB(18, 18,18), 1, 1);	
@@ -1427,7 +1463,7 @@ int DrawShadowText(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uF
 }
 DWORD GetSystemUsesLightTheme()
 {
-	////////////////////////////////////////////////////////////////////////////////////ÅÐ¶ÏÏµÍ³Ö÷ÌâÉ«ÊÇ·ñ¸ü¸Ä
+	////////////////////////////////////////////////////////////////////////////////////ï¿½Ð¶ï¿½ÏµÍ³ï¿½ï¿½ï¿½ï¿½É«ï¿½Ç·ï¿½ï¿½ï¿½ï¿½
 	HKEY pKey;
 	RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", NULL, KEY_ALL_ACCESS, &pKey);
 	DWORD dm = -1;
@@ -1444,7 +1480,7 @@ UINT_PTR	pSHAppBarMessage(DWORD dwMessage, PAPPBARDATA pData)
 {
 	UINT_PTR ret=FALSE;
 	typedef UINT_PTR(WINAPI* pfnSHAppBarMessage)(DWORD dwMessage, PAPPBARDATA pData);
-	HMODULE hDll = LoadLibrary(L"shell32.dll");
+	HMODULE hDll = LoadSystemLibrarySafeLocal(L"shell32.dll");
 	if (hDll)
 	{
 		pfnSHAppBarMessage sHAppBarMessage = (pfnSHAppBarMessage)GetProcAddress(hDll, "SHAppBarMessage");
@@ -1480,255 +1516,416 @@ UINT pGetDpiForWindow(HWND hWnd)
 */
 }
 HMODULE hWinHttp = NULL;
-pfnWinHttpOpen winHttpOpen;
-pfnWinHttpConnect winHttpConnect;
-pfnWinHttpOpenRequest winHttpOpenRequest;
-pfnWinHttpSendRequest winHttpSendRequest;
-pfnWinHttpReceiveResponse winHttpReceiveResponse;
-pfnWinHttpQueryDataAvailable winHttpQueryDataAvailable;
-pfnWinHttpReadData winHttpReadData;
-pfnWinHttpCloseHandle winHttpCloseHandle;
+pfnWinHttpOpen winHttpOpen = NULL;
+pfnWinHttpConnect winHttpConnect = NULL;
+pfnWinHttpOpenRequest winHttpOpenRequest = NULL;
+pfnWinHttpSendRequest winHttpSendRequest = NULL;
+pfnWinHttpReceiveResponse winHttpReceiveResponse = NULL;
+pfnWinHttpQueryDataAvailable winHttpQueryDataAvailable = NULL;
+pfnWinHttpReadData winHttpReadData = NULL;
+pfnWinHttpCloseHandle winHttpCloseHandle = NULL;
+pfnWinHttpSetTimeouts winHttpSetTimeouts = NULL;
+static SRWLOCK g_winHttpLock = SRWLOCK_INIT;
+static const DWORD kPriceResponseCapacity = 4096;
+static const int kPriceHttpTimeoutMs = 5000;
+
+static void ResetWinHttpFunctionsUnlocked()
+{
+	winHttpOpen = NULL;
+	winHttpConnect = NULL;
+	winHttpOpenRequest = NULL;
+	winHttpSendRequest = NULL;
+	winHttpReceiveResponse = NULL;
+	winHttpQueryDataAvailable = NULL;
+	winHttpReadData = NULL;
+	winHttpCloseHandle = NULL;
+	winHttpSetTimeouts = NULL;
+}
+
+static BOOL WinHttpFunctionsReadyUnlocked()
+{
+	return winHttpOpen != NULL && winHttpConnect != NULL &&
+		winHttpOpenRequest != NULL && winHttpSendRequest != NULL &&
+		winHttpReceiveResponse != NULL && winHttpQueryDataAvailable != NULL &&
+		winHttpReadData != NULL && winHttpCloseHandle != NULL &&
+		winHttpSetTimeouts != NULL;
+}
+
 BOOL LoadWinHttp()
 {
-	hWinHttp = LoadLibrary(L"WinHttp.dll");
-	if (hWinHttp)
+	AcquireSRWLockExclusive(&g_winHttpLock);
+	if (hWinHttp != NULL && WinHttpFunctionsReadyUnlocked())
 	{
-		winHttpOpen = (pfnWinHttpOpen)GetProcAddress(hWinHttp, "WinHttpOpen");
-		winHttpConnect = (pfnWinHttpConnect)GetProcAddress(hWinHttp, "WinHttpConnect");
-		winHttpOpenRequest = (pfnWinHttpOpenRequest)GetProcAddress(hWinHttp, "WinHttpOpenRequest");
-		winHttpSendRequest = (pfnWinHttpSendRequest)GetProcAddress(hWinHttp, "WinHttpSendRequest");
-		winHttpReceiveResponse = (pfnWinHttpReceiveResponse)GetProcAddress(hWinHttp, "WinHttpReceiveResponse");
-		winHttpQueryDataAvailable = (pfnWinHttpQueryDataAvailable)GetProcAddress(hWinHttp, "WinHttpQueryDataAvailable");
-		winHttpReadData = (pfnWinHttpReadData)GetProcAddress(hWinHttp, "WinHttpReadData");
-		winHttpCloseHandle = (pfnWinHttpCloseHandle)GetProcAddress(hWinHttp, "WinHttpCloseHandle");
+		ReleaseSRWLockExclusive(&g_winHttpLock);
 		return TRUE;
 	}
-	return FALSE;
+	if (hWinHttp != NULL)
+	{
+		FreeLibrary(hWinHttp);
+		hWinHttp = NULL;
+	}
+	ResetWinHttpFunctionsUnlocked();
+	HMODULE module = LoadLibraryExW(L"winhttp.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+	if (module == NULL)
+	{
+		ReleaseSRWLockExclusive(&g_winHttpLock);
+		return FALSE;
+	}
+	pfnWinHttpOpen openFn = (pfnWinHttpOpen)GetProcAddress(module, "WinHttpOpen");
+	pfnWinHttpConnect connectFn = (pfnWinHttpConnect)GetProcAddress(module, "WinHttpConnect");
+	pfnWinHttpOpenRequest openRequestFn = (pfnWinHttpOpenRequest)GetProcAddress(module, "WinHttpOpenRequest");
+	pfnWinHttpSendRequest sendRequestFn = (pfnWinHttpSendRequest)GetProcAddress(module, "WinHttpSendRequest");
+	pfnWinHttpReceiveResponse receiveResponseFn = (pfnWinHttpReceiveResponse)GetProcAddress(module, "WinHttpReceiveResponse");
+	pfnWinHttpQueryDataAvailable queryDataFn = (pfnWinHttpQueryDataAvailable)GetProcAddress(module, "WinHttpQueryDataAvailable");
+	pfnWinHttpReadData readDataFn = (pfnWinHttpReadData)GetProcAddress(module, "WinHttpReadData");
+	pfnWinHttpCloseHandle closeHandleFn = (pfnWinHttpCloseHandle)GetProcAddress(module, "WinHttpCloseHandle");
+	pfnWinHttpSetTimeouts setTimeoutsFn = (pfnWinHttpSetTimeouts)GetProcAddress(module, "WinHttpSetTimeouts");
+	if (openFn == NULL || connectFn == NULL || openRequestFn == NULL ||
+		sendRequestFn == NULL || receiveResponseFn == NULL || queryDataFn == NULL ||
+		readDataFn == NULL || closeHandleFn == NULL || setTimeoutsFn == NULL)
+	{
+		FreeLibrary(module);
+		ReleaseSRWLockExclusive(&g_winHttpLock);
+		return FALSE;
+	}
+	winHttpOpen = openFn;
+	winHttpConnect = connectFn;
+	winHttpOpenRequest = openRequestFn;
+	winHttpSendRequest = sendRequestFn;
+	winHttpReceiveResponse = receiveResponseFn;
+	winHttpQueryDataAvailable = queryDataFn;
+	winHttpReadData = readDataFn;
+	winHttpCloseHandle = closeHandleFn;
+	winHttpSetTimeouts = setTimeoutsFn;
+	hWinHttp = module;
+	ReleaseSRWLockExclusive(&g_winHttpLock);
+	return TRUE;
 }
+
+static BOOL CopyPriceHost(LPCWSTR source, LPWSTR destination, size_t destinationChars)
+{
+	if (source == NULL || destination == NULL || destinationChars < 2)
+		return FALSE;
+	size_t length = (size_t)lstrlenW(source);
+	if (length == 0 || length >= destinationChars)
+		return FALSE;
+	for (size_t i = 0; i < length; ++i)
+	{
+		WCHAR c = source[i];
+		if (!((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') ||
+			(c >= L'0' && c <= L'9') || c == L'.' || c == L'-'))
+			return FALSE;
+	}
+	CopyMemory(destination, source, (length + 1) * sizeof(WCHAR));
+	return TRUE;
+}
+
+static BOOL CopyPriceToken(LPCWSTR source, LPWSTR destination, size_t destinationChars)
+{
+	if (source == NULL || destination == NULL || destinationChars < 2)
+		return FALSE;
+	size_t length = (size_t)lstrlenW(source);
+	if (length == 0 || length >= destinationChars)
+		return FALSE;
+	for (size_t i = 0; i < length; ++i)
+	{
+		WCHAR c = source[i];
+		if (!((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') ||
+			(c >= L'0' && c <= L'9') || c == L'-' || c == L'_' || c == L'.'))
+			return FALSE;
+	}
+	CopyMemory(destination, source, (length + 1) * sizeof(WCHAR));
+	return TRUE;
+}
+
+static BOOL BuildPricePath(LPCWSTR prefix, LPCWSTR token, LPWSTR destination, size_t destinationChars)
+{
+	if (prefix == NULL || token == NULL || destination == NULL || destinationChars < 2)
+		return FALSE;
+	size_t prefixLength = (size_t)lstrlenW(prefix);
+	size_t tokenLength = (size_t)lstrlenW(token);
+	if (prefixLength == 0 || tokenLength == 0 || prefixLength > destinationChars - 1 ||
+		tokenLength > destinationChars - prefixLength - 1)
+		return FALSE;
+	CopyMemory(destination, prefix, prefixLength * sizeof(WCHAR));
+	CopyMemory(destination + prefixLength, token, tokenLength * sizeof(WCHAR));
+	destination[prefixLength + tokenLength] = L'\0';
+	return TRUE;
+}
+
+static BOOL ParsePriceNumber(const char* text, size_t length, float* value)
+{
+	if (text == NULL || value == NULL || length == 0 || length >= 64)
+		return FALSE;
+	char number[64] = {};
+	CopyMemory(number, text, length);
+	number[length] = '\0';
+	char* end = NULL;
+	errno = 0;
+	double parsed = strtod(number, &end);
+	if (end == number || end == NULL || *end != '\0' || errno == ERANGE ||
+		!std::isfinite(parsed) || parsed < -FLT_MAX || parsed > FLT_MAX)
+		return FALSE;
+	float converted = (float)parsed;
+	if (!std::isfinite(converted))
+		return FALSE;
+	*value = converted;
+	return TRUE;
+}
+
+static BOOL ConvertPriceText(const char* text, size_t length, WCHAR* output)
+{
+	if (output == NULL)
+		return TRUE;
+	if (text == NULL || length == 0 || length >= 64)
+		return FALSE;
+	char value[64] = {};
+	CopyMemory(value, text, length);
+	value[length] = '\0';
+	int converted = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, output, 16);
+	if (converted <= 0 || converted >= 16)
+	{
+		output[0] = L'\0';
+		return FALSE;
+	}
+	output[15] = L'\0';
+	return TRUE;
+}
+
+static BOOL ReadPriceResponse(HINTERNET request, char* buffer, DWORD bufferCapacity, DWORD* bytesUsed)
+{
+	if (request == NULL || buffer == NULL || bytesUsed == NULL || bufferCapacity < 2 ||
+		winHttpQueryDataAvailable == NULL || winHttpReadData == NULL)
+		return FALSE;
+	*bytesUsed = 0;
+	buffer[0] = '\0';
+	SIZE_T used = 0;
+	for (;;)
+	{
+		DWORD available = 0;
+		if (!winHttpQueryDataAvailable(request, &available))
+			return FALSE;
+		if (available == 0)
+			break;
+		if (used >= (SIZE_T)bufferCapacity - 1 ||
+			(SIZE_T)available > (SIZE_T)bufferCapacity - 1 - used)
+			return FALSE;
+		DWORD read = 0;
+		if (!winHttpReadData(request, buffer + used, available, &read) || read == 0 || read > available)
+			return FALSE;
+		used += read;
+		buffer[used] = '\0';
+	}
+	*bytesUsed = (DWORD)used;
+	return TRUE;
+}
+
 BOOL GetOKXFloat(char* szBuffer, float* fOut, WCHAR* szOut, char* sz)
 {
-	char* x = xstrstr(szBuffer, sz);
-	if (x)
-	{
-		char* l = xstrstr(x, ":");
-		if (l)
-		{
-			l += 2;
-			char* r = xstrstr(l, "\"");
-			if (r)
-			{
-				r[0] = '\0';
-				if (szOut)
-					MultiByteToWideChar(CP_UTF8, 0, l, -1, szOut, 16);
-				*fOut = xatof(l);
-				r[0] = '\"';
-				return TRUE;
-			}
-		}
-	}
-	return FALSE;
+	if (szBuffer == NULL || fOut == NULL || sz == NULL || sz[0] == '\0')
+		return FALSE;
+	char* key = xstrstr(szBuffer, sz);
+	if (key == NULL)
+		return FALSE;
+	char* colon = strchr(key + strlen(sz), ':');
+	if (colon == NULL)
+		return FALSE;
+	const char* value = colon + 1;
+	while (*value == ' ' || *value == '\t' || *value == '\r' || *value == '\n')
+		++value;
+	if (*value == '"')
+		++value;
+	const char* end = value;
+	while (*end != '\0' && *end != '"' && *end != ',' && *end != '}' &&
+		*end != '\r' && *end != '\n')
+		++end;
+	float parsed = 0.0f;
+	if (!ParsePriceNumber(value, (size_t)(end - value), &parsed) ||
+		!ConvertPriceText(value, (size_t)(end - value), szOut))
+		return FALSE;
+	*fOut = parsed;
+	return TRUE;
 }
+
 BOOL GetOKXPrice(LPTSTR szName, LPTSTR szWeb, float* fOutLast, float* fOutOpen, WCHAR* szOutLast, WCHAR* szOutOpen)
 {
-	if (hWinHttp == NULL)
-	{
-		if (!LoadWinHttp())
-			return FALSE;
-	}
-	DWORD dwSize = 0;
-	DWORD dwDownloaded = 0;
-	char pszOutBuffer[512];
-	BOOL  bResults = FALSE;
-	HINTERNET  hSession = NULL,hConnect = NULL,hRequest = NULL;
+	DWORD bytesUsed = 0;
+	char response[kPriceResponseCapacity] = {};
+	HINTERNET hSession = NULL;
+	HINTERNET hConnect = NULL;
+	HINTERNET hRequest = NULL;
+	WCHAR host[256] = {};
+	WCHAR token[128] = {};
+	WCHAR objectName[256] = {};
+	WCHAR parsedLastText[16] = {};
+	WCHAR parsedOpenText[16] = {};
+	float parsedLast = 0.0f;
+	float parsedOpen = 0.0f;
+	BOOL result = FALSE;
+	static const char lastKey[] = "last";
+	static const char openKey[] = "sodUtc8";
+	static const WCHAR pathPrefix[] = L"/api/v5/market/ticker?instId=";
 
-	// Use WinHttpOpen to obtain a session handle.
-	hSession = winHttpOpen(L"Price", WINHTTP_ACCESS_TYPE_NO_PROXY, NULL, NULL, NULL);
+	if (fOutLast == NULL || fOutOpen == NULL ||
+		!CopyPriceToken(szName, token, ARRAYSIZE(token)) ||
+		!CopyPriceHost(szWeb, host, ARRAYSIZE(host)) ||
+		!BuildPricePath(pathPrefix, token, objectName, ARRAYSIZE(objectName)) ||
+		!LoadWinHttp())
+		return FALSE;
+	hSession = winHttpOpen(L"TrayS/price", WINHTTP_ACCESS_TYPE_NO_PROXY, NULL, NULL, 0);
+	if (hSession == NULL || !winHttpSetTimeouts(hSession, kPriceHttpTimeoutMs, kPriceHttpTimeoutMs,
+		kPriceHttpTimeoutMs, kPriceHttpTimeoutMs))
+		goto Cleanup;
+	hConnect = winHttpConnect(hSession, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+	if (hConnect == NULL)
+		goto Cleanup;
+	hRequest = winHttpOpenRequest(hConnect, L"GET", objectName, NULL,
+		L"https://www.okx.com/", WINHTTP_DEFAULT_ACCEPT_TYPES,
+		WINHTTP_FLAG_SECURE | WINHTTP_FLAG_REFRESH);
+	if (hRequest == NULL || !winHttpSetTimeouts(hRequest, kPriceHttpTimeoutMs, kPriceHttpTimeoutMs,
+		kPriceHttpTimeoutMs, kPriceHttpTimeoutMs))
+		goto Cleanup;
+	if (!winHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+		WINHTTP_NO_REQUEST_DATA, 0, 0, 0) || !winHttpReceiveResponse(hRequest, NULL) ||
+		!ReadPriceResponse(hRequest, response, ARRAYSIZE(response), &bytesUsed) || bytesUsed == 0)
+		goto Cleanup;
+	if (!GetOKXFloat(response, &parsedLast, parsedLastText, (char*)lastKey) ||
+		!GetOKXFloat(response, &parsedOpen, parsedOpenText, (char*)openKey))
+		goto Cleanup;
+	*fOutLast = parsedLast;
+	*fOutOpen = parsedOpen;
+	if (szOutLast != NULL)
+		lstrcpynW(szOutLast, parsedLastText, 16);
+	if (szOutOpen != NULL)
+		lstrcpynW(szOutOpen, parsedOpenText, 16);
+	result = TRUE;
 
-	//hSession = WinHttpOpen( L"WinHTTP Example/1.0",  
-	//                        WINHTTP_ACCESS_TYPE_NO_PROXY,
-	//                        WINHTTP_NO_PROXY_NAME, 
-	//                        WINHTTP_NO_PROXY_BYPASS, 0 );
-
-	// Specify an HTTP server.
-	if (hSession)
-		hConnect = winHttpConnect(hSession, szWeb,
-			INTERNET_DEFAULT_PORT, 0);
-	WCHAR szGet[256] = L"/api/v5/market/ticker?instId=";
-	lstrcat(szGet, szName);
-	// Create an HTTP request handle.
-	if (hConnect)
-		hRequest = winHttpOpenRequest(hConnect, L"GET", szGet,NULL, L"https://www.okx.com/",WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_REFRESH);
-
-	// Send a request.
-	if (hRequest)
-		bResults = winHttpSendRequest(hRequest,WINHTTP_NO_ADDITIONAL_HEADERS, 0,WINHTTP_NO_REQUEST_DATA, 0,0, 0);
-
-
-	// End the request.
-	if (bResults)
-		bResults = winHttpReceiveResponse(hRequest, NULL);
-	
-	// Keep checking for data until there is nothing left.
-	size_t i = 0;
-	ZeroMemory(pszOutBuffer, 512);
-	if (bResults)
-	{
-		do
-		{
-			dwSize = 0;
-			winHttpQueryDataAvailable(hRequest, &dwSize);
-			if (!dwSize)
-				break;
-			if (i+dwSize > 511)
-				dwSize = 511-i;
-			if (winHttpReadData(hRequest, (LPVOID)&pszOutBuffer[i], dwSize, &dwDownloaded))
-			{
-				i = strlen(pszOutBuffer);
-			}
-			if (!dwDownloaded)
-				break;
-		} while (dwSize != 0);
-		char szLast[] = "last";
-		char szsodUtc8[] = "sodUtc8";
-		bResults = GetOKXFloat(pszOutBuffer, fOutLast, szOutLast, szLast);
-		bResults = GetOKXFloat(pszOutBuffer, fOutOpen, szOutOpen, szsodUtc8);
-	}
-	// Close any open handles.
-	if (hRequest) winHttpCloseHandle(hRequest);
-	if (hConnect) winHttpCloseHandle(hConnect);
-	if (hSession) winHttpCloseHandle(hSession);
-	return bResults;
+Cleanup:
+	if (hRequest != NULL && winHttpCloseHandle != NULL)
+		winHttpCloseHandle(hRequest);
+	if (hConnect != NULL && winHttpCloseHandle != NULL)
+		winHttpCloseHandle(hConnect);
+	if (hSession != NULL && winHttpCloseHandle != NULL)
+		winHttpCloseHandle(hSession);
+	return result;
 }
+
 BOOL GetSinaFloat(char* szBuffer, float* fOut, WCHAR* szOut, int n)
 {
-	char* l=szBuffer;
-	for (int i=0;i<n;i++)
+	if (szBuffer == NULL || fOut == NULL || n < 0)
+		return FALSE;
+	const char* value = szBuffer;
+	for (int i = 0; i < n; ++i)
 	{
-		l = xstrstr(l+1, ",");
-		if (!l)
-			break;
+		const char* comma = strchr(value, ',');
+		if (comma == NULL)
+			return FALSE;
+		value = comma + 1;
 	}
-	if (l)
-	{
-		l += 1;
-		char* r = xstrstr(l, ",");
-		if (r)
-		{
-			r[0] = '\0';
-			if(szOut)
-				MultiByteToWideChar(CP_UTF8, 0, l, -1, szOut, 16);
-			*fOut = xatof(l);
-			r[0] = ',';
-			return TRUE;
-		}
-	}
-	return FALSE;
+	const char* end = value;
+	while (*end != '\0' && *end != ',' && *end != '"' && *end != ';' &&
+		*end != '\r' && *end != '\n')
+		++end;
+	float parsed = 0.0f;
+	if (!ParsePriceNumber(value, (size_t)(end - value), &parsed) ||
+		!ConvertPriceText(value, (size_t)(end - value), szOut))
+		return FALSE;
+	*fOut = parsed;
+	return TRUE;
 }
+
 BOOL GetSinaPrice(LPTSTR szName, float* fOutLast, float* fOutOpen, WCHAR* szOutLast, WCHAR* szOutOpen)
 {
-	if (hWinHttp == NULL)
+	DWORD bytesUsed = 0;
+	char response[kPriceResponseCapacity] = {};
+	HINTERNET hSession = NULL;
+	HINTERNET hConnect = NULL;
+	HINTERNET hRequest = NULL;
+	WCHAR token[128] = {};
+	WCHAR objectName[256] = {};
+	WCHAR parsedLastText[16] = {};
+	WCHAR parsedOpenText[16] = {};
+	float parsedLast = 0.0f;
+	float parsedOpen = 0.0f;
+	int openField = 2;
+	int lastField = 3;
+	BOOL result = FALSE;
+	static const WCHAR pathPrefix[] = L"/list=";
+
+	if (fOutLast == NULL || fOutOpen == NULL ||
+		!CopyPriceToken(szName, token, ARRAYSIZE(token)) ||
+		!BuildPricePath(pathPrefix, token, objectName, ARRAYSIZE(objectName)) ||
+		!LoadWinHttp())
+		return FALSE;
+	hSession = winHttpOpen(L"TrayS/price", WINHTTP_ACCESS_TYPE_NO_PROXY, NULL, NULL, 0);
+	if (hSession == NULL || !winHttpSetTimeouts(hSession, kPriceHttpTimeoutMs, kPriceHttpTimeoutMs,
+		kPriceHttpTimeoutMs, kPriceHttpTimeoutMs))
+		goto Cleanup;
+	hConnect = winHttpConnect(hSession, L"hq.sinajs.cn", INTERNET_DEFAULT_HTTP_PORT, 0);
+	if (hConnect == NULL)
+		goto Cleanup;
+	hRequest = winHttpOpenRequest(hConnect, L"GET", objectName, NULL,
+		L"http://vip.stock.finance.sina.com.cn/", WINHTTP_DEFAULT_ACCEPT_TYPES,
+		WINHTTP_FLAG_REFRESH);
+	if (hRequest == NULL || !winHttpSetTimeouts(hRequest, kPriceHttpTimeoutMs, kPriceHttpTimeoutMs,
+		kPriceHttpTimeoutMs, kPriceHttpTimeoutMs))
+		goto Cleanup;
+	if (!winHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+		WINHTTP_NO_REQUEST_DATA, 0, 0, 0) || !winHttpReceiveResponse(hRequest, NULL) ||
+		!ReadPriceResponse(hRequest, response, ARRAYSIZE(response), &bytesUsed) || bytesUsed == 0)
+		goto Cleanup;
+	if (token[0] == L'h')
 	{
-		if (!LoadWinHttp())
-			return FALSE;
+		openField = 3;
+		lastField = 6;
 	}
-	DWORD dwSize = 0;
-	DWORD dwDownloaded = 0;
-	char pszOutBuffer[512];
-	BOOL  bResults = FALSE;
-	HINTERNET  hSession = NULL, hConnect = NULL, hRequest = NULL;
-
-	// Use WinHttpOpen to obtain a session handle.
-	hSession = winHttpOpen(L"Price", WINHTTP_ACCESS_TYPE_NO_PROXY, NULL, NULL, NULL);
-
-	//hSession = WinHttpOpen( L"WinHTTP Example/1.0",  
-	//                        WINHTTP_ACCESS_TYPE_NO_PROXY,
-	//                        WINHTTP_NO_PROXY_NAME, 
-	//                        WINHTTP_NO_PROXY_BYPASS, 0 );
-
-	// Specify an HTTP server.
-	if (hSession)
-		hConnect = winHttpConnect(hSession, L"hq.sinajs.cn",
-			INTERNET_DEFAULT_PORT, 0);
-	WCHAR szGet[256] = L"/list=";
-	lstrcat(szGet, szName);
-	// Create an HTTP request handle.
-	if (hConnect)
-		hRequest = winHttpOpenRequest(hConnect, L"GET", szGet, NULL, L"http://vip.stock.finance.sina.com.cn/", WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_REFRESH);
-
-	// Send a request.
-	if (hRequest)
-		bResults = winHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-
-
-	// End the request.
-	if (bResults)
-		bResults = winHttpReceiveResponse(hRequest, NULL);
-
-	// Keep checking for data until there is nothing left.
-	size_t i = 0;
-	ZeroMemory(pszOutBuffer, 512);
-	if (bResults)
+	else if (token[0] == L'g')
 	{
-		do
-		{
-			dwSize = 0;
-			winHttpQueryDataAvailable(hRequest, &dwSize);
-			if (!dwSize)
-				break;
-			if (i+dwSize > 511)
-				dwSize = 511-i;
-			if (winHttpReadData(hRequest, (LPVOID)&pszOutBuffer[i], dwSize, &dwDownloaded))
-			{
-				i = strlen(pszOutBuffer);
-			}
-			if (!dwDownloaded)
-				break;
-		} while (dwSize != 0);
-		if (szName[0] == L'h')//¸Û¹É
-		{
-			bResults = GetSinaFloat(pszOutBuffer, fOutOpen, szOutOpen, 3);
-			bResults = GetSinaFloat(pszOutBuffer, fOutLast, szOutLast, 6);
-		}
-		else if (szName[0] == L'g')//ÃÀ¹É
-		{
-			bResults = GetSinaFloat(pszOutBuffer, fOutOpen, szOutOpen, 26);
-			bResults = GetSinaFloat(pszOutBuffer, fOutLast, szOutLast, 1);
-		}
-		else if (szName[0] == L'C')//¹ÉÖ¸ÆÚ»õ
-		{
-			bResults = GetSinaFloat(pszOutBuffer, fOutOpen, szOutOpen, 14);
-			bResults = GetSinaFloat(pszOutBuffer, fOutLast, szOutLast, 3);
-		}
-		else if (szName[0] >= L'A' && szName[0] <= L'Z')
-		{
-			bResults = GetSinaFloat(pszOutBuffer, fOutOpen, szOutOpen, 10);
-			bResults = GetSinaFloat(pszOutBuffer, fOutLast, szOutLast, 8);
-		}
-		else
-		{
-			bResults = GetSinaFloat(pszOutBuffer, fOutOpen, szOutOpen, 2);
-			bResults = GetSinaFloat(pszOutBuffer, fOutLast, szOutLast, 3);
-		}
+		openField = 26;
+		lastField = 1;
 	}
-	// Close any open handles.
-	if (hRequest) winHttpCloseHandle(hRequest);
-	if (hConnect) winHttpCloseHandle(hConnect);
-	if (hSession) winHttpCloseHandle(hSession);
-	return bResults;
+	else if (token[0] == L'C')
+	{
+		openField = 14;
+		lastField = 3;
+	}
+	else if (token[0] >= L'A' && token[0] <= L'Z')
+	{
+		openField = 10;
+		lastField = 8;
+	}
+	if (!GetSinaFloat(response, &parsedOpen, parsedOpenText, openField) ||
+		!GetSinaFloat(response, &parsedLast, parsedLastText, lastField))
+		goto Cleanup;
+	*fOutLast = parsedLast;
+	*fOutOpen = parsedOpen;
+	if (szOutLast != NULL)
+		lstrcpynW(szOutLast, parsedLastText, 16);
+	if (szOutOpen != NULL)
+		lstrcpynW(szOutOpen, parsedOpenText, 16);
+	result = TRUE;
+
+Cleanup:
+	if (hRequest != NULL && winHttpCloseHandle != NULL)
+		winHttpCloseHandle(hRequest);
+	if (hConnect != NULL && winHttpCloseHandle != NULL)
+		winHttpCloseHandle(hConnect);
+	if (hSession != NULL && winHttpCloseHandle != NULL)
+		winHttpCloseHandle(hSession);
+	return result;
 }
-
 wchar_t* lstrstr(const wchar_t* str, const wchar_t* sub)
 {
 	int i = 0;
 	int j = 0;
 	while (str[i] && sub[j])
 	{
-		if (str[i] == sub[j])//Èç¹ûÏàµÈ
+		if (str[i] == sub[j])//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 		{
 			++i;
 			++j;
 		}
-		else		     //Èç¹û²»µÈ
+		else		     //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 		{
 			i = i - j + 1;
 			j = 0;
@@ -1750,12 +1947,12 @@ char* xstrstr(const char* str, const char* sub)
 	int j = 0;
 	while (str[i] && sub[j])
 	{
-		if (str[i] == sub[j])//Èç¹ûÏàµÈ
+		if (str[i] == sub[j])//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 		{
 			++i;
 			++j;
 		}
-		else		     //Èç¹û²»µÈ
+		else		     //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 		{
 			i = i - j + 1;
 			j = 0;
@@ -1859,6 +2056,8 @@ BOOL FloatToStr(float f, WCHAR* sz)
 	}
 	return TRUE;
 }
+#if defined(TRAYS_ENABLE_LEGACY_SERVICE)
+#if TRAYS_ENABLE_LEGACY_SERVICE
 void EmptyProcessMemory(DWORD pID)
 {
 	HANDLE hProcess;
@@ -1871,3 +2070,5 @@ void EmptyProcessMemory(DWORD pID)
 	SetProcessWorkingSetSize(hProcess, -1, -1);
 	EmptyWorkingSet(hProcess);
 }
+#endif
+#endif

@@ -10,10 +10,6 @@
 #include <dwmapi.h>
 
 
-//WINRING0
-#include "OlsDef.h"
-#include "OlsApiInit.h"
-
 //ATIGPU
 #include "adl_sdk.h"
 
@@ -79,8 +75,14 @@ typedef struct _TRAFFIC
 	ULONG64 out_bytes;
 	ULONG64 in_byte;
 	ULONG64 out_byte;	
-	PWCHAR FriendlyName;
-	PCHAR AdapterName;
+	// Stable adapter identity used to keep byte counters associated with the
+	// correct interface when GetAdaptersAddresses changes enumeration order.
+	ULONG IfIndex;
+	// Keep names in the snapshot instead of pointing into the replaceable
+	// GetAdaptersAddresses buffer.  Explorer/network changes can rebuild that
+	// buffer while the task-tip window is painting.
+	WCHAR FriendlyName[256];
+	CHAR AdapterName[256];
 	WCHAR IP4[16];
 }TRAFFIC;
 ////////////////////////////////////////////进程的内存使用数据结构
@@ -101,6 +103,9 @@ typedef struct _PROCESSCPUUSAGE
 typedef struct _PROCESSTIME
 {
 	DWORD dwProcessID;
+	// A PID can be reused after a process exits. Keep the creation timestamp
+	// together with the PID so a new process never inherits the old sample.
+	FILETIME CreateTime;
 	LARGE_INTEGER g_slgProcessTimeOld;
 }PROCESSTIME;
 DWORD dNumProcessor = 0;//CPU数量
@@ -164,6 +169,9 @@ PIP_ADAPTER_ADDRESSES piaa;//网卡结构
 PMIB_IF_TABLE2 mit2;//网速结构
 TRAFFIC* traffic;//每个网卡速度
 int nTraffic = 0;//有几张网卡
+// Avoid unbounded UI dimensions/allocation if a virtual adapter provider
+// returns an unexpectedly large list.
+static const int kMaxTrafficEntries = 256;
 
 int mWidth;//工具窗口宽度
 int mHeight;//工具窗口竖排高度
@@ -255,8 +263,9 @@ typedef struct _TRAYSAVE//默认参数
 	COLORREF cPriceColor[4];//行情颜色
 	BOOL bTrayStyle;//任务栏风格开关
 }TRAYSAVE;
+static const DWORD kTraySaveVersion = 116;
 TRAYSAVE TraySave = {
-	116,
+	kTraySaveVersion,
 	{ ACCENT_ENABLE_TRANSPARENTGRADIENT,ACCENT_ENABLE_BLURBEHIND } ,
 	{ 0x00111111,0x66000000 },{ 255,255 } ,
 	{ 10 * 1024 * 1024,64 * 1024 * 1024,66,96,81,96,61,88,98 * 1048576,88,0,0 } ,
@@ -276,7 +285,7 @@ TRAYSAVE TraySave = {
 	{ RGB(0,0,1),RGB(128,128,128),RGB(255,255,255),RGB(255,0,0),RGB(0,168,0),RGB(255,128,0),RGB(255,0,0),RGB(0,0,0) },
 	{ 666,666 },
 	{0},
-	11,
+	400,
 	TRUE,
 	{-14,0,0,0,FW_BOLD,0,0,0,0,0,0,0,0,L"微软雅黑"} ,
 	-14,
@@ -340,18 +349,32 @@ int iWindowMode=FALSE;
 MEMORYSTATUSEX MemoryStatusEx;/////////////////虚拟内存/内存大小
 BOOL bTaskBarMoveing = FALSE;///////////////////窗口是否正在移动中
 PROCESSMEMORYUSAGE pmu[6];
-PROCESSMEMORYUSAGE *ppmu[6];
+PROCESSMEMORYUSAGE *ppmu[6] = { &pmu[0], &pmu[1], &pmu[2], &pmu[3], &pmu[4], &pmu[5] };
 PROCESSCPUUSAGE pcu[6];
-PROCESSCPUUSAGE *ppcu[6];
+PROCESSCPUUSAGE *ppcu[6] = { &pcu[0], &pcu[1], &pcu[2], &pcu[3], &pcu[4], &pcu[5] };
 int nProcess;
 PROCESSTIME * pProcessTime;
+// Process snapshots are refreshed by the worker thread while the task-tip
+// window reads them on the UI thread.  Keep the fixed top-six arrays and the
+// variable-sized elapsed-time table coherent across those two threads.
+SRWLOCK g_processLock = SRWLOCK_INIT;
+SIZE_T pProcessTimeCapacity = 0;
+static const SIZE_T kMaxProcessTimeEntries = 4096;
 
 //BOOL bTaskOther = FALSE;
 
 ////////////////////////////////////////LibHardware库
 HMODULE hOHMA = NULL;
-typedef void(WINAPI* pfnGetTemperature)(float* fCpu, float* fGpu, float* fMain, float* fHdd,int iHdd, float* fCpuPackge);
+// GetTemperature is exported by the C++/CLI DLL without an explicit calling
+// convention, so it is __cdecl on Win32. x64 ignores the distinction, but a
+// mismatched stdcall declaration corrupts the stack on 32-bit Windows.
+typedef void(__cdecl* pfnGetTemperature)(float* fCpu, float* fGpu, float* fMain, float* fHdd,int iHdd, float* fCpuPackge);
 pfnGetTemperature GetTemperature;
+SRWLOCK g_temperatureLock = SRWLOCK_INIT;
+// Adapter snapshots are refreshed on the worker thread while task-tip and
+// selection menus read them on the UI thread.  Keep the heap-backed snapshots
+// and the per-adapter counters consistent across Explorer/network changes.
+SRWLOCK g_networkLock = SRWLOCK_INIT;
 
 HMODULE hPDH = NULL;
 ////////////////////////////////////////////////查找隐藏试最大化窗口
@@ -376,9 +399,13 @@ pfnAccessibleObjectFromWindow AccessibleObjectFromWindowT;
 pfnAccessibleChildren AccessibleChildrenT;
 
 /////////////////////////////////////////////////CPU温度
-BOOL bRing0=NULL;
-HMODULE m_hOpenLibSys = NULL;
-BOOL bIntel;
+// Kept as a compatibility flag for existing rendering branches. It now means
+// that the managed temperature entry point is available, never that a kernel
+// driver was loaded by TrayS.
+BOOL bRing0=FALSE;
+// LibreHardwareMonitor 0.9.4 still contains the legacy WinRing0 backend.
+// Keep it disabled unless the user explicitly opts in through the environment.
+BOOL bLhmDisabled = TRUE;
 ////////////////////////////////////////////////ATI显卡温度
 // Memory allocation function
 void* __stdcall ADL_Main_Memory_Alloc(int iSize)
@@ -398,9 +425,13 @@ void __stdcall ADL_Main_Memory_Free(void** lpBuffer)
 // Definitions of the used function pointers. Add more if you use other ADL APIs
 typedef int(*ADL_MAIN_CONTROL_CREATE)(ADL_MAIN_MALLOC_CALLBACK, int);
 typedef int(*ADL_MAIN_CONTROL_DESTROY)();
+typedef int(*ADL_ADAPTER_NUMBER_OF_ADAPTERS_GET)(int* lpNumAdapters);
+typedef int(*ADL_ADAPTER_ACTIVE_GET)(int iAdapterIndex, int* lpActive);
 typedef int(*ADL_OVERDRIVE5_TEMPERATURE_GET) (int iAdapterIndex, int iThermalControllerIndex, ADLTemperature *lpTemperature);
 ADL_MAIN_CONTROL_CREATE					ADL_Main_Control_Create;
 ADL_MAIN_CONTROL_DESTROY				ADL_Main_Control_Destroy;
+ADL_ADAPTER_NUMBER_OF_ADAPTERS_GET		ADL_Adapter_NumberOfAdapters_Get;
+ADL_ADAPTER_ACTIVE_GET					ADL_Adapter_Active_Get;
 ADL_OVERDRIVE5_TEMPERATURE_GET			ADL_Overdrive5_Temperature_Get;
 ADLTemperature adlTemperature = { 0 };
 HMODULE hATIDLL=NULL;
@@ -427,8 +458,11 @@ HMODULE hATIDLL=NULL;
 #define NvU32 unsigned long
 #define NvS32 signed int 
 #define MAKE_NVAPI_VERSION(typeName,ver)(NvU32)(sizeof(typeName) | ((ver) << 16))
-typedef int NvPhysicalGpuHandle;
-typedef int NvDisplayHandle;
+// NVAPI handles are opaque pointers.  Keeping them as 32-bit integers
+// truncates every physical-GPU handle in a 64-bit build and also makes the
+// EnumPhysicalGPUs output buffer half the size expected by the driver.
+typedef void* NvPhysicalGpuHandle;
+typedef void* NvDisplayHandle;
 #define MAX_THERMAL_SENSORS_PER_GPU     3
 typedef enum _NV_THERMAL_CONTROLLER
 {
@@ -495,12 +529,15 @@ typedef NV_GPU_THERMAL_SETTINGS_V2  NV_GPU_THERMAL_SETTINGS;
 typedef UINT32 NvAPI_Status;
 typedef void* (*NvAPI_QueryInterface_t)(UINT32 offset);
 typedef NvAPI_Status(__cdecl *NvAPI_Initialize_t)(void);
-typedef NvAPI_Status(*NvAPI_EnumPhysicalGPUs_t)(NvPhysicalGpuHandle *pGpuHandles, int *pGpuCount);
-typedef NvAPI_Status(__cdecl *NvAPI_GPU_GetThermalSettings_t)(const NvPhysicalGpuHandle gpuHandle, int sensorIndex, NV_GPU_THERMAL_SETTINGS *pnvGPUThermalSettings);
-NvAPI_QueryInterface_t NvAPI_QueryInterface;
-NvAPI_GPU_GetThermalSettings_t NvAPI_GPU_GetThermalSettings;
+typedef NvAPI_Status(__cdecl *NvAPI_EnumPhysicalGPUs_t)(NvPhysicalGpuHandle *pGpuHandles, NvU32 *pGpuCount);
+typedef NvAPI_Status(__cdecl *NvAPI_GPU_GetThermalSettings_t)(NvPhysicalGpuHandle gpuHandle, NvU32 sensorIndex, NV_GPU_THERMAL_SETTINGS *pnvGPUThermalSettings);
+NvAPI_QueryInterface_t NvAPI_QueryInterface = NULL;
+NvAPI_GPU_GetThermalSettings_t NvAPI_GPU_GetThermalSettings = NULL;
 HMODULE hNVDLL = NULL;
-NvPhysicalGpuHandle hPhysicalGpu[4];
+// NvAPI_EnumPhysicalGPUs writes up to NVAPI_MAX_PHYSICAL_GPUS handles; the
+// previous four-element buffer could be overrun on hosts with virtual or
+// eGPU adapters.
+NvPhysicalGpuHandle hPhysicalGpu[NVAPI_MAX_PHYSICAL_GPUS] = {};
 /////////////////////////////////////////////////////CPU频率
 typedef struct _PROCESSOR_POWER_INFORMATION {
 	ULONG Number;

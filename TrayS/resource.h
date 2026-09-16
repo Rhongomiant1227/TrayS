@@ -37,7 +37,7 @@
 #define IDC_SYSLINK                     1014
 #define IDC_CHECK_MONITOR               1015
 #define IDC_CHECK_MONITOR_LEFT          1016
-#define IDC_SYSLINK_52PJ                1017
+#define IDC_SYSLINK_COMPAT              1017
 #define IDC_RADIO_NORMAL                1018
 #define IDC_RADIO_MAXIMIZE              1019
 #define IDC_CHECK_MONITOR_FLOAT         1020
