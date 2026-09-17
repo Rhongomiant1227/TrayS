@@ -147,7 +147,6 @@ Assert-Condition ($trayProject -match '<ClCompile Include="Update\.cpp"' -and $t
 Assert-Condition ($trayFilters -match 'Update\.cpp' -and $trayFilters -match 'Update\.h') 'Updater files are not in project filters'
 Assert-Condition ($traySource -notmatch 'ShellExecuteW.*download|start.*https://') 'Updater must not launch a browser or external downloader'
 Assert-Condition ($readmeSource -match 'cgbsmy/TrayS') 'README does not identify the upstream project'
-Assert-Condition ($readmeSource -match '原生 ARM64') 'README does not document the native ARM64 boundary'
 Assert-Condition ($readmeSource -match 'TrayS_<版本>_<架构>\.zip') 'README does not document the named release package format'
 
 if ($failures.Count -gt 0) {

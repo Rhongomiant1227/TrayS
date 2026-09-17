@@ -66,36 +66,12 @@ TrayS_1.5.0_x86.zip
 
 下载包在安装前会检查 Release digest、本地 SHA-256、版本资源和 PE 架构。程序会先退出，再由临时 helper 完成替换并重启；失败时保留旧 EXE，不会把半个更新包覆盖到正在运行的程序上。更新过程不打开浏览器，也不调用第三方下载器。
 
-## 🧭 ARM / ARM64 到底支不支持？
-
-先把几个容易混淆的词分开：
-
-| 环境 | 当前结论 | 说明 |
-| --- | --- | --- |
-| 传统 32 位 Windows 10/11 | 支持 | 使用 `TrayS_1.5.0_x86.zip`。 |
-| x64 Windows 10/11（Intel/AMD） | 支持 | 使用 `TrayS_1.5.0_x64.zip`。这是当前主要目标。 |
-| Windows on ARM64，运行 x64 应用模拟层 | **可尝试，非原生支持** | 使用 x64 包。Windows 负责模拟 x64 指令；CPU 热度是否可见取决于固件 ACPI 热区，ARM 设备通常没有 AMD ADL/NVIDIA NVAPI。性能和传感器结果不能视为已认证。 |
-| 原生 ARM64 Windows 进程 | **当前不支持** | solution 和项目没有 ARM64 配置，C++/CLI/.NET Framework 监控包装层、随附程序集及厂商 DLL 没有经过 ARM64 构建和实机验证。 |
-| ARM64EC / 混合 ARM 原生模块 | **当前不支持** | 需要重新设计模块边界和第三方依赖，不能把 x64 或 x86 包改名后冒充 ARM64。 |
-
-所以答案是：**现在不是“原生已经支持 ARM”**。在 Windows on ARM 机器上，x64 包可能借助系统模拟层运行，这是操作系统的兼容能力，不是 TrayS 的 ARM64 原生构建。我们暂时没有把 ARM64 配置硬塞进工程，因为那会把一个未经验证的架构错误映射到 x64/x86，反而更容易产生启动失败、传感器误读或更新错包。
-
-如果未来要做真正的 ARM64 版本，至少需要单独完成：
-
-1. ARM64 原生 TrayS 和监控包装层构建，或把 C++/CLI 监控边界改成与架构解耦的进程/IPC 方案。
-2. ARM64 可用的 .NET/传感器程序集，以及在 ARM 设备上验证 ACPI、磁盘和多显示器路径。
-3. AMD/NVIDIA ARM64 厂商 API 的实际 DLL 和签名情况；不能假设 x64 厂商 DLL 可以直接加载。
-4. 真机回归、睡眠/唤醒、Explorer 重启、DPI、更新回滚和安全软件扫描。
-
-在这些条件完成前，README 和构建脚本都明确把 ARM64 标为“未支持”，不会误导用户安装错误架构包。
-
 ## 📦 下载和使用
 
 从 [Releases](https://github.com/Rhongomiant1227/TrayS/releases) 选择对应架构：
 
 - 大多数 Intel/AMD 电脑：`TrayS_<版本>_x64.zip`
 - 只有确实运行 32 位 Windows 时：`TrayS_<版本>_x86.zip`
-- Windows on ARM64：先尝试 x64 包；如果启动或传感器表现异常，请把它视为模拟层兼容性问题，不要安装第三方驱动来“补温度”。
 
 解压后直接运行 `TrayS.exe` 即可。默认安全包不包含个人配置，配置文件会在程序目录旁按需创建：
 
@@ -141,7 +117,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 | 方向 | 改进 |
 | --- | --- |
-| 系统范围 | 明确 Windows 10/11 目标；删除旧系统映射，避免把 ARM/Any CPU 错误当成 x64。 |
+| 系统范围 | 明确 Windows 10/11 目标；删除旧系统映射和错误的 Any CPU 映射。 |
 | CPU 温度 | ACPI/PDH 只读热区、有限值检查、失败可用性降级；不再依赖 WinRing0 才能启动。 |
 | AMD GPU | ADL 动态加载、活动适配器过滤、逐卡只读温度读取。 |
 | NVIDIA GPU | NVAPI 物理 GPU 数组按 API 最大值分配，逐卡读取并限制传感器范围。 |
@@ -167,18 +143,14 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 - Intel 移动/桌面平台的热区和睡眠唤醒；
 - AMD+iGPU/NVIDIA 独显混合场景；
 - 多 NVIDIA 卡、虚拟显示适配器和 Explorer 重启；
-- Windows on ARM64 的 x64 模拟运行；
 - 更新失败、网络中断、磁盘空间不足和旧配置迁移。
 
 没有实机证据的项目不会在这里被写成“已认证”。
 
 ## 💌 贡献和反馈
 
-欢迎提交 issue 或 pull request。请尽量附上：Windows 版本、CPU/GPU 型号、x64/x86/ARM64 环境、是否为混合显卡、复现步骤和日志。不要上传个人 `TrayS.dat`、GitHub token 或完整的安全软件敏感报告。
-
-如果你在 ARM 机器上测试，请明确标注“原生 ARM64”还是“Windows on ARM 的 x64 模拟”，这两个结果对后续维护完全不是一回事。
+欢迎提交 issue 或 pull request。请尽量附上：Windows 版本、CPU/GPU 型号、x64/x86 环境、是否为混合显卡、复现步骤和日志。不要上传个人 `TrayS.dat`、GitHub token 或完整的安全软件敏感报告。
 
 ## 📜 许可与致谢
 
 本仓库保留上游 TrayS 的历史代码和许可信息。感谢上游作者提供最初的任务栏监控工具，也感谢 LibreHardwareMonitor、HidSharp、AMD ADL 与 NVIDIA NVAPI 生态提供可用的用户态接口。第三方组件的许可和版本信息请以仓库中的对应文件为准。
-
