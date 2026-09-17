@@ -83,6 +83,8 @@ $resourceSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.rc'
 $functionSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/Function.cpp') -Raw
 $trayProject = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj') -Raw
 $trayFilters = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj.filters') -Raw
+$readmePath = Join-Path $repoRoot 'README.md'
+$readmeSource = if (Test-Path -LiteralPath $readmePath) { Get-Content -LiteralPath $readmePath -Raw } else { '' }
 Assert-Condition ($apiHeader -match '\*fCpu\s*=\s*-1\.0f') 'GetTemperature does not initialize CPU output'
 Assert-Condition ($apiHeader -match 'static_cast<size_t>\(iHDD\)\s*<\s*temperatures\.size\(\)') 'HDD index is not bounds checked'
 Assert-Condition ($apiHeader -match 'try\s*\{[\s\S]*m_pMonitor->GetHardwareInfo\(\)') 'GetTemperature does not contain the managed update boundary'
@@ -144,6 +146,9 @@ Assert-Condition ($resourceSource -match 'IDC_BUTTON_CHECK_UPDATE' -and $resourc
 Assert-Condition ($trayProject -match '<ClCompile Include="Update\.cpp"' -and $trayProject -match '<ClInclude Include="Update\.h"') 'Updater files are not in the project'
 Assert-Condition ($trayFilters -match 'Update\.cpp' -and $trayFilters -match 'Update\.h') 'Updater files are not in project filters'
 Assert-Condition ($traySource -notmatch 'ShellExecuteW.*download|start.*https://') 'Updater must not launch a browser or external downloader'
+Assert-Condition ($readmeSource -match 'cgbsmy/TrayS') 'README does not identify the upstream project'
+Assert-Condition ($readmeSource -match '原生 ARM64') 'README does not document the native ARM64 boundary'
+Assert-Condition ($readmeSource -match 'TrayS_<版本>_<架构>\.zip') 'README does not document the named release package format'
 
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Error $_ }
