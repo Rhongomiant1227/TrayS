@@ -4,7 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $installPath = Join-Path $repoRoot '.buildtools'
-$logPath = Join-Path $repoRoot 'build-tools-install.log'
+$logPath = Join-Path $PSScriptRoot 'build-tools-install.log'
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]$identity

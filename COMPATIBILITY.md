@@ -22,6 +22,7 @@
 - 默认 CPU 温度路径改为 Windows/ACPI Thermal Zone 的 PDH 只读计数器：优先读取 `High Precision Temperature`，再兼容普通 `Temperature`，遍历可用热区并以最高的合理值作为平台/封装温度。该路径由 Windows 与固件提供，不读 MSR、不读 PCI 配置空间、不安装 WinRing0/PawnIO，也不调用 AMD/Intel 调频或电压接口；因此 AMD Ryzen、Intel Core/Xeon 以及没有厂商专用传感器的机器都可以安全尝试。某些固件不公开热区时会返回不可用，不会阻止 GPU、磁盘或其他监控继续运行。
 - PDH 句柄、函数指针和计数器状态均经过检查；缺失的性能计数器会降级为不可用，不再向 `lodctr` 发起隐式系统修改。
 - 任务栏图标位置改为一次性移动，取消逐像素 `SetWindowPos` 动画；查找 Explorer 任务栏改为有限重试，避免 Explorer 重启时永久阻塞或造成高 CPU。
+- Explorer 的任务栏子窗口查找使用有界的 `EnumChildWindows` 类名枚举，兼容 Windows 11 的 XAML/Composition 中间层；当 `FindWindowEx` 无法返回实际任务列表句柄时，监控窗口仍能定位和刷新。
 - 行情请求使用 System32 中的 `winhttp.dll`，完整验证导出函数、设置 5 秒解析/连接/发送/接收超时，并把响应限制为 4096 字节。请求主机和行情标识符经白名单校验，解析在两个价格字段都成功后才提交，网络故障保留上一次有效价格。
 - NVIDIA 的物理 GPU 句柄缓存按 `NVAPI_MAX_PHYSICAL_GPUS` 分配，匹配 `NvAPI_EnumPhysicalGPUs` 的最大写入量；温度结构和返回数量均经过检查，修复原先固定四个句柄可能造成的越界写入。
 - 配置文件读取改为临时结构 + 完整长度/版本校验，刷新间隔限制在 100–5000 ms，默认值从 11 ms 调整为 400 ms；退出时先等待工作线程，超时才使用最后手段终止。
@@ -33,7 +34,9 @@
 
 `0.9.4` 是为了保持现有 net472 C++/CLI 包装层和 Win32 构建可用而选择的过渡版本。它本身仍包含旧版 WinRing0 后端；因此本次修改通过默认禁用 LHM，消除了 TrayS 正常启动时触发该后端的路径，但不能宣称 DLL 内部已经删除所有第三方驱动代码。默认 CPU 温度不依赖 LHM，而是尽力使用 Windows/ACPI 热区；只有在 ACPI 不可用、且用户明确设置 `TRAYS_ENABLE_LHM=1` 时才会启用 LHM（旧 AMD 别名仅用于兼容测试），并应在隔离环境观察安全软件、睡眠唤醒和重启行为。更长期的方向是迁移到 PawnIO 版本的 LHM（0.9.5 或更高版本），但 PawnIO 同样涉及内核驱动安装，必须单独完成签名、权限和实机回归后才能改变默认策略。
 
-本机已使用仓库内固定的 VS 2022 Build Tools（MSBuild 17.14、MSVC v143）完成 `Release|x64` 与 `Release|Win32` 构建，静态检查和链接均通过，生成的安全包不包含 LHM/WinRing0/PawnIO/Ols。MSBuild 日志中曾出现 C++/CLI 尝试加载 `System.Core, Version=3.5.0.0` 的非致命提示，但最终构建为 0 个警告、0 个错误。尚未在本机启动维护版 TrayS 做真实硬件温度采样，因此 AMD、Intel、多显卡和不同 Windows build 的实机回归仍需在隔离环境完成；请使用管理员权限按下表回归：
+历史维护记录显示，带有 VS 2022 Build Tools（MSBuild 17.14、MSVC v143）的环境曾完成 Release|x64 与 Release|Win32 构建，静态检查和链接均通过，生成的安全包不包含 LHM/WinRing0/PawnIO/Ols。本工作目录没有系统级 MSBuild，因此无法在这里重建 C++/CLI Release；同时已用项目内的便携式 LLVM-MinGW 生成 `dist\TrayS-compat-win11-x64\TrayS-compat-win11-x64.exe` 做原生 Win32 兼容性验证。该 EXE 静态链接 LLVM C++ 运行库，不依赖工具链目录中的私有 DLL。
+
+在本机 Windows 11 build 22631 上，便携式 EXE 已脱离 `.buildtools` 直接启动并保持运行；Win32 枚举确认可见监控窗口的 `GWLP_HWNDPARENT` 指向 `Shell_TrayWnd`，矩形为 `692,746-979,783`，任务栏矩形为 `0,728-1280,800`，两者相交。开启临时兼容配置后，通过 `TrayS` 共享映射读取到 `iTemperature1=28`，说明 ACPI CPU 温度路径已在实际运行进程中生效。该机器只发现 Intel Iris Xe 和 OrayIddDriver，未发现 ADL/NVAPI DLL，因此 GPU 温度能力仍按不可用降级。AMD、Intel、多显卡和不同 Windows build 的完整实机回归仍需在隔离环境逐项完成；请使用管理员权限按下表回归：
 
 | 平台/场景 | 需要确认的行为 |
 | --- | --- |
@@ -52,6 +55,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate-compatibili
 ```
 
 脚本会解析两个 `.vcxproj`、检查 solution 配置、验证监控程序集的 PE 架构/版本，并反射检查包装层依赖的托管 API。它不能替代 VS 编译或真实硬件回归。
+
+没有 MSBuild 时，可运行项目内的原生兼容性构建：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-portable-compat-exe.ps1 -Force
+```
+
+它只使用 `.buildtools\llvm-mingw`，把中间文件写入 `.build-native\`，输出 `dist\TrayS-compat-win11-x64\TrayS-compat-win11-x64.exe` 及其构建说明。删除整个仓库会同时删除这套工具和中间文件；该构建不包含 LibreHardwareMonitor 或任何内核驱动。
+
+## 只读环境诊断
+
+如果程序在某台机器上没有出现在任务栏或温度栏为空，可在仓库根目录运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-compatibility.ps1
+```
+
+该脚本只读取 Windows/Explorer 的版本和窗口类、ACPI Thermal Zone 计数器、已安装的厂商 DLL、仓库监控程序集和 MSBuild 位置，不启动 TrayS，不加载 LHM/WinRing0/PawnIO，也不修改系统。若 `EnumChildWindows` 能找到 `MSTaskSwWClass`/`MSTaskListWClass`，而 `FindWindowEx direct` 对应项为空，说明 Explorer 的实际层级超出了旧的直接子窗口假设；维护版会使用后代枚举路径。若高精度热区计数器有有效值，CPU 温度路径可用；`TRAYSAVE` 的 `bMonitorTemperature` 默认仍为关闭，需在设置中启用后才会采样。Intel 集成显卡或虚拟显示适配器没有 ADL/NVAPI 时，GPU 温度属于不可用能力，不应把 `0` 当成真实温度。
+
+资源生命周期审计和运行压力采样记录在 [MEMORY_AUDIT.md](MEMORY_AUDIT.md)，其中包含动态模块、线程、句柄、GDI/USER 对象和网络快照的清理边界。
 
 ## 构建和打包
 

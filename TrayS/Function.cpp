@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern BOOL TryDrawShadowTextArgb(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat, COLORREF bColor, BOOL bYes);
+
 static HMODULE LoadSystemLibrarySafeLocal(LPCWSTR moduleName)
 {
 	if (moduleName == NULL || moduleName[0] == L'\0')
@@ -154,6 +156,23 @@ BOOL pCreateEnvironmentBlock(_At_((PZZWSTR*)lpEnvironment, _Outptr_)LPVOID* lpEn
 	}
 	return ret;
 }
+BOOL pDestroyEnvironmentBlock(LPVOID lpEnvironment)
+{
+	if (lpEnvironment == NULL)
+		return TRUE;
+	typedef BOOL(WINAPI* pfnDestroyEnvironmentBlock)(LPVOID lpEnvironment);
+	HMODULE hUserenv = LoadSystemLibrarySafeLocal(L"userenv.dll");
+	BOOL ret = FALSE;
+	if (hUserenv)
+	{
+		pfnDestroyEnvironmentBlock DestroyEnvironmentBlock =
+			(pfnDestroyEnvironmentBlock)GetProcAddress(hUserenv, "DestroyEnvironmentBlock");
+		if (DestroyEnvironmentBlock)
+			ret = DestroyEnvironmentBlock(lpEnvironment);
+		FreeLibrary(hUserenv);
+	}
+	return ret;
+}
 ULONG pCallNtPowerInformation(_In_ POWER_INFORMATION_LEVEL InformationLevel, _In_reads_bytes_opt_(InputBufferLength) PVOID InputBuffer, _In_ ULONG InputBufferLength, _Out_writes_bytes_opt_(OutputBufferLength) PVOID OutputBuffer, _In_ ULONG OutputBufferLength)
 {
 	ULONG ret = -1;
@@ -170,140 +189,97 @@ ULONG pCallNtPowerInformation(_In_ POWER_INFORMATION_LEVEL InformationLevel, _In
 }
 #if defined(TRAYS_ENABLE_LEGACY_SERVICE)
 #if TRAYS_ENABLE_LEGACY_SERVICE
-BOOL LaunchAppIntoDifferentSession(WCHAR* szExe, WCHAR* szDir, WCHAR* szLine)//��SYSTEM���г��򲢿��Խ�������
+BOOL LaunchAppIntoDifferentSession(WCHAR* szExe, WCHAR* szDir, WCHAR* szLine)
 {
-	PROCESS_INFORMATION pi;
-	STARTUPINFO si;
+	PROCESS_INFORMATION pi = {};
+	STARTUPINFO si = {};
 	BOOL bResult = FALSE;
+	DWORD winlogonPid = 0;
+	ULONG dwSessionId = WTSGetActiveConsoleSessionId();
+	DWORD dwCreationFlags = NORMAL_PRIORITY_CLASS | CREATE_NEW_CONSOLE;
+	HANDLE hSnap = INVALID_HANDLE_VALUE;
+	HANDLE hUserToken = NULL;
+	HANDLE hUserTokenDup = NULL;
+	HANDLE hPToken = NULL;
+	HANDLE hProcess = NULL;
+	LPVOID pEnv = NULL;
+	TOKEN_PRIVILEGES tp = {};
+	LUID luid = {};
+	PROCESSENTRY32 procEntry = {};
 
-	DWORD winlogonPid;
-	ULONG dwSessionId;
-	HANDLE hUserToken, hUserTokenDup = NULL, hPToken = NULL, hProcess;
-	DWORD dwCreationFlags;
-
-	// Log the client on to the local computer.
-
-	dwSessionId = WTSGetActiveConsoleSessionId();
-
-	//////////////////////////////////////////
-	   // Find the winlogon process
-	////////////////////////////////////////
-
-	PROCESSENTRY32 procEntry;
-
-	HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	if (hSnap == INVALID_HANDLE_VALUE)
-	{
-		return FALSE;
-	}
+		goto Cleanup;
 
-	procEntry.dwSize = sizeof(PROCESSENTRY32);
-
+	procEntry.dwSize = sizeof(procEntry);
 	if (!Process32First(hSnap, &procEntry))
-	{
-		return FALSE;
-	}
-
+		goto Cleanup;
 	do
 	{
 		if (lstrcmpi(procEntry.szExeFile, L"winlogon.exe") == 0)
 		{
-			// We found a winlogon process...
-		// make sure it's running in the console session
-			DWORD winlogonSessId = 0;
-			if (ProcessIdToSessionId(procEntry.th32ProcessID, &winlogonSessId)
-				&& winlogonSessId == dwSessionId)
+			DWORD winlogonSession = 0;
+			if (ProcessIdToSessionId(procEntry.th32ProcessID, &winlogonSession) &&
+				winlogonSession == dwSessionId)
 			{
 				winlogonPid = procEntry.th32ProcessID;
 				break;
 			}
 		}
-
 	} while (Process32Next(hSnap, &procEntry));
 
-	////////////////////////////////////////////////////////////////////////
+	CloseHandle(hSnap);
+	hSnap = INVALID_HANDLE_VALUE;
+	if (winlogonPid == 0 || !pWTSQueryUserToken(dwSessionId, &hUserToken) || !hUserToken)
+		goto Cleanup;
 
-	pWTSQueryUserToken(dwSessionId, &hUserToken);
-	dwCreationFlags = NORMAL_PRIORITY_CLASS | CREATE_NEW_CONSOLE;
-	memset(&si, 0, sizeof(STARTUPINFO));
-	si.cb = sizeof(STARTUPINFO);
-	si.lpDesktop = (LPWSTR)L"winsta0\\default";
-	memset(&pi, 0, sizeof(pi));
-	TOKEN_PRIVILEGES tp;
-	LUID luid;
 	hProcess = OpenProcess(MAXIMUM_ALLOWED, FALSE, winlogonPid);
+	if (!hProcess)
+		goto Cleanup;
+	if (!OpenProcessToken(hProcess, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY |
+		TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_SESSIONID |
+		TOKEN_READ | TOKEN_WRITE, &hPToken))
+		goto Cleanup;
+	if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &luid))
+		goto Cleanup;
+	tp.PrivilegeCount = 1;
+	tp.Privileges[0].Luid = luid;
+	tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	if (!DuplicateTokenEx(hPToken, MAXIMUM_ALLOWED, NULL, SecurityIdentification,
+		TokenPrimary, &hUserTokenDup) || !hUserTokenDup)
+		goto Cleanup;
+	if (!SetTokenInformation(hUserTokenDup, TokenSessionId, &dwSessionId, sizeof(dwSessionId)))
+		goto Cleanup;
+	if (!AdjustTokenPrivileges(hUserTokenDup, FALSE, &tp, sizeof(tp), NULL, NULL) &&
+		GetLastError() != ERROR_NOT_ALL_ASSIGNED)
+		goto Cleanup;
+
+	si.cb = sizeof(si);
+	si.lpDesktop = (LPWSTR)L"winsta0\\default";
+	if (pCreateEnvironmentBlock(&pEnv, hUserTokenDup, TRUE))
+		dwCreationFlags |= CREATE_UNICODE_ENVIRONMENT;
+	else
+		pEnv = NULL;
+	bResult = CreateProcessAsUser(hUserTokenDup, szExe, szLine, NULL, NULL, FALSE,
+		dwCreationFlags, pEnv, szDir, &si, &pi);
+
+Cleanup:
+	if (pEnv)
+		pDestroyEnvironmentBlock(pEnv);
+	if (pi.hProcess)
+		CloseHandle(pi.hProcess);
+	if (pi.hThread)
+		CloseHandle(pi.hThread);
 	if (hProcess)
-	{
-		if (!::OpenProcessToken(hProcess, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY
-			| TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_SESSIONID
-			| TOKEN_READ | TOKEN_WRITE, &hPToken))
-		{
-			//			int abcd = GetLastError();
-						//		printf("Process token open Error: %u\n", GetLastError());
-		}
-
-		if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &luid))
-		{
-			//		printf("Lookup Privilege value Error: %u\n", GetLastError());
-		}
-		tp.PrivilegeCount = 1;
-		tp.Privileges[0].Luid = luid;
-		tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-		DuplicateTokenEx(hPToken, MAXIMUM_ALLOWED, NULL,
-			SecurityIdentification, TokenPrimary, &hUserTokenDup);
-		int dup = GetLastError();
-
-		//Adjust Token privilege
-		SetTokenInformation(hUserTokenDup,
-			TokenSessionId, (LPVOID)dwSessionId, sizeof(ULONG));
-
-		if (!AdjustTokenPrivileges(hUserTokenDup, FALSE, &tp, sizeof(TOKEN_PRIVILEGES),
-			(PTOKEN_PRIVILEGES)NULL, NULL))
-		{
-			//			int abc = GetLastError();
-						//		printf("Adjust Privilege value Error: %u\n", GetLastError());
-		}
-
-		if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
-		{
-			//		printf("Token does not have the provilege\n");
-		}
-
-		LPVOID pEnv = NULL;
-
-		if (pCreateEnvironmentBlock(&pEnv, hUserTokenDup, TRUE))
-		{
-			dwCreationFlags |= CREATE_UNICODE_ENVIRONMENT;
-		}
-		else
-			pEnv = NULL;
-
-		// Launch the process in the client's logon session.
-
-		bResult = CreateProcessAsUser(
-			hUserTokenDup,                     // client's access token
-			szExe,    // file to execute
-			szLine,                 // command line
-			NULL,            // pointer to process SECURITY_ATTRIBUTES
-			NULL,               // pointer to thread SECURITY_ATTRIBUTES
-			FALSE,              // handles are not inheritable
-			dwCreationFlags,     // creation flags
-			pEnv,               // pointer to new environment block
-			szDir,               // name of current directory
-			&si,               // pointer to STARTUPINFO structure
-			&pi                // receives information about new process
-		);
-//		CloseHandle(pi.hProcess);
-//		CloseHandle(pi.hThread);
-	}
-	if (hProcess)
-	{
 		CloseHandle(hProcess);
+	if (hUserToken)
 		CloseHandle(hUserToken);
+	if (hUserTokenDup)
 		CloseHandle(hUserTokenDup);
+	if (hPToken)
 		CloseHandle(hPToken);
-	}
+	if (hSnap != INVALID_HANDLE_VALUE)
+		CloseHandle(hSnap);
 	return bResult;
 }
 #endif
@@ -390,6 +366,8 @@ void WINAPI ServiceMain(DWORD dwArgc, LPTSTR* lpszArgv)//�������߳
 	//ֹͣ����
 	status.dwCurrentState = SERVICE_STOPPED;
 	SetServiceStatus(hServiceStatus, &status);
+	CloseHandle(hEvent);
+	hEvent = INVALID_HANDLE_VALUE;
 }
 DWORD ServiceRunState()//��������״̬
 {
@@ -946,13 +924,14 @@ BOOL AutoRun(BOOL GetSet, BOOL bAutoRun,const WCHAR* szName)//��ȡ����
 	{
 		if (GetSet)
 		{
-			HKEY pKey;
+			HKEY pKey = NULL;
 			RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", NULL, KEY_ALL_ACCESS, &pKey);
 			if (pKey)
 			{
 				RegDeleteValue(pKey, szName);
 				RegCloseKey(pKey);
 			}
+			pKey = NULL;
 			RegOpenKeyEx(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", NULL, KEY_ALL_ACCESS, &pKey);
 			if (pKey)
 			{
@@ -978,7 +957,7 @@ BOOL AutoRun(BOOL GetSet, BOOL bAutoRun,const WCHAR* szName)//��ȡ����
 	}
 	else
 	{
-		HKEY pKey;
+		HKEY pKey = NULL;
 		RegOpenKeyEx(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", NULL, KEY_ALL_ACCESS, &pKey);
 		if (pKey)
 		{
@@ -999,7 +978,7 @@ BOOL AutoRun(BOOL GetSet, BOOL bAutoRun,const WCHAR* szName)//��ȡ����
 			else
 			{
 				WCHAR nFileName[MAX_PATH];
-				DWORD cbData = MAX_PATH * sizeof WCHAR;
+				DWORD cbData = MAX_PATH * sizeof(WCHAR);
 				DWORD dType = REG_SZ;
 				if (RegQueryValueEx(pKey, szName, NULL, &dType, (LPBYTE)nFileName, &cbData) == ERROR_SUCCESS)
 				{
@@ -1440,6 +1419,8 @@ HICON GetIconForCSIDL(int csidl)
 }
 int DrawShadowText(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat,COLORREF bColor,BOOL bYes)//������Ӱ����
 {
+	if (TryDrawShadowTextArgb(hDC, lpString, nCount, lpRect, uFormat, bColor, bYes))
+		return 1;
 //	COLORREF cColor = GetTextColor(hDC);
 //	return DrawShadowText(hDC, lpString, nCount, lpRect, uFormat, cColor, RGB(18, 18,18), 1, 1);	
 	if (bYes)
@@ -1600,6 +1581,18 @@ BOOL LoadWinHttp()
 	hWinHttp = module;
 	ReleaseSRWLockExclusive(&g_winHttpLock);
 	return TRUE;
+}
+
+void UnloadWinHttp()
+{
+	AcquireSRWLockExclusive(&g_winHttpLock);
+	if (hWinHttp != NULL)
+	{
+		FreeLibrary(hWinHttp);
+		hWinHttp = NULL;
+	}
+	ResetWinHttpFunctionsUnlocked();
+	ReleaseSRWLockExclusive(&g_winHttpLock);
 }
 
 static BOOL CopyPriceHost(LPCWSTR source, LPWSTR destination, size_t destinationChars)
@@ -2067,8 +2060,13 @@ void EmptyProcessMemory(DWORD pID)
 	{
 		hProcess = OpenProcess(PROCESS_ALL_ACCESS, TRUE, pID);
 	}
-	SetProcessWorkingSetSize(hProcess, -1, -1);
-	EmptyWorkingSet(hProcess);
+	if (hProcess)
+	{
+		SetProcessWorkingSetSize(hProcess, -1, -1);
+		EmptyWorkingSet(hProcess);
+		if (pID != NULL)
+			CloseHandle(hProcess);
+	}
 }
 #endif
 #endif

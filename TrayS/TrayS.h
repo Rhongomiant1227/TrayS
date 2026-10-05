@@ -1,12 +1,13 @@
 ﻿#pragma once
 #include "resource.h"
-#include "function.h"
+#include "Function.h"
 #include "Update.h"
 #include <Commdlg.h>
 #include <Oleacc.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <Iphlpapi.h>
+#include <netioapi.h>
 #include <Tlhelp32.h>
 #include <dwmapi.h>
 
@@ -442,6 +443,7 @@ HMODULE hATIDLL=NULL;
 ///////////////////////////////////////////////NVIDIA显卡温度
 // 接口ID值
 #define ID_NvAPI_Initialize                     0x0150E828
+#define ID_NvAPI_Unload                         0xD22BDD7E
 #define ID_NvAPI_GPU_GetFullName                0xCEEE8E9F
 #define ID_NvAPI_GPU_GetThermalSettings         0xE3640A56
 #define ID_NvAPI_EnumNvidiaDisplayHandle        0x9ABDD40D
@@ -533,10 +535,13 @@ typedef NV_GPU_THERMAL_SETTINGS_V2  NV_GPU_THERMAL_SETTINGS;
 typedef UINT32 NvAPI_Status;
 typedef void* (*NvAPI_QueryInterface_t)(UINT32 offset);
 typedef NvAPI_Status(__cdecl *NvAPI_Initialize_t)(void);
+typedef NvAPI_Status(__cdecl *NvAPI_Unload_t)(void);
 typedef NvAPI_Status(__cdecl *NvAPI_EnumPhysicalGPUs_t)(NvPhysicalGpuHandle *pGpuHandles, NvU32 *pGpuCount);
 typedef NvAPI_Status(__cdecl *NvAPI_GPU_GetThermalSettings_t)(NvPhysicalGpuHandle gpuHandle, NvU32 sensorIndex, NV_GPU_THERMAL_SETTINGS *pnvGPUThermalSettings);
 NvAPI_QueryInterface_t NvAPI_QueryInterface = NULL;
 NvAPI_GPU_GetThermalSettings_t NvAPI_GPU_GetThermalSettings = NULL;
+NvAPI_Unload_t NvAPI_Unload = NULL;
+BOOL g_nvapiInitialized = FALSE;
 HMODULE hNVDLL = NULL;
 // NvAPI_EnumPhysicalGPUs writes up to NVAPI_MAX_PHYSICAL_GPUS handles; the
 // previous four-element buffer could be overrun on hosts with virtual or

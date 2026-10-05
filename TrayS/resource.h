@@ -154,6 +154,11 @@
 #define IDC_BUTTON_COLOR_PRICE_HIGH     1103
 #define IDC_BUTTON_CHECK_UPDATE         1104
 #define IDC_CHECK_AUTO_UPDATE           1105
+#define IDC_SLIDER_OFFSET_X             1106
+#define IDC_SLIDER_OFFSET_Y             1107
+#define IDC_LABEL_OFFSET_X              1108
+#define IDC_LABEL_OFFSET_Y              1109
+#define IDC_BUTTON_OFFSET_RESET         1110
 #define ID_32800                        32800
 #define IDC_SELECT_ALL                  33000
 #define IDC_DISK_ALL                    33200

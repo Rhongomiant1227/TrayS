@@ -29,6 +29,7 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 ### 🧊 温度监控：优先安全降级
 
 - CPU 温度默认优先尝试 Windows/ACPI Thermal Zone 的只读 PDH 路径，支持 `High Precision Temperature` 和普通 `Temperature` 计数器。
+- 为保持旧配置兼容，`显示温度` 默认关闭；需要在设置窗口勾选后才会创建温度采样路径和任务栏温度栏。
 - AMD Ryzen、Intel Core/Xeon 等平台只要固件向 Windows 暴露热区，就可以尝试读取；没有热区时显示不可用，不会为了“必须有数字”去读 MSR、PCI 配置空间或安装驱动。
 - AMD 显卡使用 ADL 只读温度接口，NVIDIA 显卡使用 NVAPI 只读温度接口；逐卡枚举，混合 AMD+iGPU/NVIDIA、多 NVIDIA 卡或虚拟显示适配器时，单个设备失败不会拖垮其他设备。
 - 风扇、频率、电压、功耗、超频和驱动重载接口不在默认监控路径中。
@@ -47,6 +48,8 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 - 启动前明确检查 Windows 10 及以上版本；Windows 7/8/8.1 不在本维护版范围内。
 - 设置窗口保留原生 Win32 风格，减少额外依赖；默认、透明、模糊、亚克力选项与实际实现一致。
+- 设置窗口的“左右”和“上下”滑条用于校准 Win11 任务栏监控条位置，数值按像素保存；“归零”可恢复自动锚定位置。默认偏移为 0，不会改变其他机器的原有布局。
+- 监控条创建、调整大小和数据采样都会主动触发首帧/重绘；监控条不需要鼠标悬停才会出现或更新，悬停只负责显示详细提示窗口。
 - Win11 任务栏布局由系统 Shell 接管的场景会按实际能力降级，而不是强行改写 Shell。
 - 更新了版本标识、维护说明链接，并移除已经失效的旧系统/旧论坛文案。
 
@@ -93,6 +96,25 @@ TrayS.update.dat      # 更新开关，默认不存在即视为开启
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate-compatibility.ps1
 ```
 
+如果某台机器没有显示任务栏监控或温度为空，可运行只读环境诊断：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-compatibility.ps1
+```
+
+它会报告 Windows/Explorer 窗口层级、ACPI 温度计数器、厂商 GPU DLL 和本地 MSBuild，不会启动 TrayS 或修改系统。
+
+本次兼容性增强的资源审计、运行压力采样和已修正的模块/句柄释放路径见 [MEMORY_AUDIT.md](MEMORY_AUDIT.md)。
+
+如果当前机器没有管理员权限安装 Visual Studio Build Tools，也可以使用仓库内的便携式 LLVM-MinGW 工具链生成一个可直接运行的 x64 兼容性验证 EXE：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\build-portable-compat-exe.ps1 -Force
+```
+
+输出目录为 `dist\TrayS-compat-win11-x64\`，同时生成 `dist\TrayS-compat-win11-x64.zip`。脚本把中间文件放在 `.build-native\`，并静态链接 LLVM 的 C++ 运行库，因此输出目录不需要携带 `libc++.dll`、`libunwind.dll` 或 `libwinpthread-1.dll`。这个便携构建覆盖 TrayS 的原生 Win32 任务栏、PDH/ACPI 和显卡厂商 API 路径；带 C++/CLI 的 LibreHardwareMonitor 包装层仍需要完整的 MSVC/C++/CLI 工具链。
+
 构建并生成带产品名的安全 Release 包：
 
 ```powershell
@@ -135,7 +157,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 🧪 测试边界
 
-当前完成的是静态检查、x64/x86 Release 编译、PE 架构检查、包内容检查和 Release digest 校验；没有启动维护版 TrayS，没有加载温度 DLL，没有重载 AMD/NVIDIA 驱动，也没有做可能导致关机、卡死或驱动冲突的压力测试。
+本次工作目录已完成静态检查、只读兼容性诊断，并用仓库内 LLVM-MinGW 重新编译了 `dist\TrayS-compat-win11-x64\TrayS-compat-win11-x64.exe`。该 EXE 已在 Windows 11 build 22631 上脱离工具链目录直接启动；窗口枚举确认监控窗口是可见的任务栏后代，矩形与 `Shell_TrayWnd` 重叠。使用临时兼容配置开启温度后，共享监控数据报告 CPU 温度 28°C。当前机器没有 AMD/NVIDIA 厂商 DLL，所以 Intel/虚拟显示适配器的 GPU 温度仍按能力不可用处理；没有加载 LHM/WinRing0/PawnIO，也没有重载 AMD/NVIDIA 驱动。
+
+这次便携构建是原生 Win32 兼容性验证产物，不替代带 C++/CLI 的 MSVC Release 包。完整 x64/x86 Release 仍需 Visual Studio Build Tools；当前机器未检测到 MSBuild，因此没有声称完成 C++/CLI Release 构建。
 
 真实硬件回归仍需要在可恢复的隔离环境中逐项完成，尤其是：
 

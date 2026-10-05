@@ -366,6 +366,7 @@ FodyWeavers.xsd
 # workspace and are uploaded to GitHub Releases separately. Do not commit the
 # toolchain, build intermediates, user configuration, or ZIP staging tree.
 .buildtools/
+.build-native/
 Bin/
 dist/
 

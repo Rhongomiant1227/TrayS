@@ -83,6 +83,8 @@ $resourceSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.rc'
 $functionSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/Function.cpp') -Raw
 $trayProject = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj') -Raw
 $trayFilters = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj.filters') -Raw
+$portableBuildPath = Join-Path $repoRoot 'tools/build-portable-compat-exe.ps1'
+$portableBuild = if (Test-Path -LiteralPath $portableBuildPath) { Get-Content -LiteralPath $portableBuildPath -Raw } else { '' }
 $readmePath = Join-Path $repoRoot 'README.md'
 $readmeSource = if (Test-Path -LiteralPath $readmePath) { Get-Content -LiteralPath $readmePath -Raw } else { '' }
 Assert-Condition ($apiHeader -match '\*fCpu\s*=\s*-1\.0f') 'GetTemperature does not initialize CPU output'
@@ -111,6 +113,8 @@ Assert-Condition ($traySource -match 'TRAYS_ENABLE_LHM') 'LHM safety opt-in guar
 Assert-Condition ($traySource -match 'bLhmDisabled\s*=\s*!IsLhmOptIn') 'LHM is not disabled by default'
 Assert-Condition ($traySource -match 'InitializeSupportedWindowsVersion') 'Windows 10+ startup gate is missing'
 Assert-Condition ($traySource -match 'dwMajorVersion\s*>=\s*10') 'Windows 10+ version comparison is missing'
+Assert-Condition ($traySource -match 'FindDescendantByClass') 'Shell descendant window discovery helper is missing'
+Assert-Condition ($traySource -match 'EnumChildWindows\(root') 'Shell discovery does not enumerate descendant windows'
 Assert-Condition ($resourceSource -match 'TrayS 1\.5\.0') 'Maintained UI version label is missing'
 Assert-Condition ($resourceSource -match 'FILEVERSION 1,5,0,0' -and $resourceSource -match 'PRODUCTVERSION 1,5,0,0') 'Resource version is not 1.5.0'
 Assert-Condition ($resourceSource -match 'IDC_SYSLINK_COMPAT') 'Compatibility documentation link is missing'
@@ -127,6 +131,11 @@ foreach ($legacyPath in @('TrayS/OlsApiInit.h', 'TrayS/OlsApiInitDef.h', 'TrayS/
 Assert-Condition ($traySource -notmatch 'while\s*\(nleft\s*!=') 'Taskbar movement still uses a per-pixel loop'
 Assert-Condition ($trayHeader -match 'NvPhysicalGpuHandle hPhysicalGpu\[NVAPI_MAX_PHYSICAL_GPUS\]') 'NVAPI physical GPU handle buffer is not sized for the API maximum'
 Assert-Condition ($trayProject -match '<UACExecutionLevel>asInvoker</UACExecutionLevel>') 'Default UAC execution level is not asInvoker'
+Assert-Condition (Test-Path -LiteralPath $portableBuildPath -PathType Leaf) 'Portable compatibility build script is missing'
+Assert-Condition ($portableBuild -match 'llvm-mingw') 'Portable compatibility build does not use the repository toolchain'
+Assert-Condition ($portableBuild -match "'x86_64-w64-windows-gnu'") 'Portable compatibility build target is not x64 MinGW'
+Assert-Condition ($portableBuild -match "'-static'") 'Portable compatibility build does not statically link its C++ runtime'
+Assert-Condition ($portableBuild -match 'TrayS-compat-win11-x64\.exe') 'Portable compatibility output name is missing'
 Assert-Condition ($functionSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'WinHTTP is not loaded from System32'
 Assert-Condition ($functionSource -match 'kPriceHttpTimeoutMs\s*=\s*5000' -and $functionSource -match 'winHttpSetTimeouts\(') 'WinHTTP timeout is not bounded to 5000 ms'
 Assert-Condition ($functionSource -notmatch '(?m)^\s*(?!//).*\bLoadLibrary\s*\(') 'Function.cpp contains an unqualified LoadLibrary call'

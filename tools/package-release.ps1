@@ -169,6 +169,7 @@ if ($IncludeLhm) {
     Copy-Item -LiteralPath (Join-Path $repoRoot 'OpenHardwareMonitorApi/HidSharp.dll') -Destination $packageRoot
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'COMPATIBILITY.md') -Destination $packageRoot
+Copy-Item -LiteralPath (Join-Path $repoRoot 'MEMORY_AUDIT.md') -Destination $packageRoot
 
 if (-not [string]::IsNullOrWhiteSpace($ConfigSourceDirectory)) {
     if (-not (Test-Path -LiteralPath $ConfigSourceDirectory -PathType Container)) {

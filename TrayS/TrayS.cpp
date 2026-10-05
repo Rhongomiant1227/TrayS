@@ -1,4 +1,4 @@
-﻿// TrayS.cpp : 定义应用程序的入口点。
+// TrayS.cpp : 定义应用程序的入口点。
 //
 #ifdef _WIN64
 #pragma comment(linker,"/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -12,6 +12,8 @@
 #include <limits.h>
 #include <psapi.h>
 #include <cmath>
+#include <stdarg.h>
+#include <wchar.h>
 static void ClearNetworkSnapshotUnlocked();
 static void ClearProcessSnapshotUnlocked();
 
@@ -69,7 +71,7 @@ static BOOL IsValidIfTableBuffer(PMIB_IFTABLE table, ULONG bytes)
 		return FALSE;
 	ULONG count = table->dwNumEntries;
 	SIZE_T required = FIELD_OFFSET(MIB_IFTABLE, table);
-	if (count > (SIZE_T)-1 / sizeof(MIB_IFROW))
+	if ((SIZE_T)count > ((SIZE_T)-1 / sizeof(MIB_IFROW)))
 		return FALSE;
 	required += (SIZE_T)count * sizeof(MIB_IFROW);
 	return required <= bytes;
@@ -123,6 +125,281 @@ static void SanitizeProcessDisplayDataUnlocked()
 }
 COLORREF oPixelColor;
 HDC hDesktopDC=NULL;
+// The tips panel is rendered from the user-selected font, but at high-DPI
+// settings the full network/process panel can otherwise exceed the work area.
+// This temporary height keeps the panel usable without changing the saved
+// preference or the main taskbar monitor font.
+static int gTipsDrawFontHeight = 0;
+static RECT gMonitorDragStartRect = {};
+static BOOL gMonitorCalibrating = FALSE;
+static int gMonitorDragStartOffsetX = 0;
+static int gMonitorDragStartOffsetY = 0;
+static const UINT kMenuSettingCommand = 32801;
+static const UINT WM_APP_TRAYS_MONITOR_REFRESH = WM_APP + 0x41;
+static const UINT WM_APP_TRAYS_THEME_CHANGED = WM_APP + 0x42;
+
+// Portable diagnostic trail for modeless-window failures.
+static void TraySRuntimeLog(const wchar_t* message)
+{
+    wchar_t modulePath[MAX_PATH] = {};
+    if (!GetModuleFileNameW(NULL, modulePath, ARRAYSIZE(modulePath))) return;
+    wchar_t* slash = wcsrchr(modulePath, L'\\');
+    if (!slash) return;
+    lstrcpyW(slash + 1, L"TrayS-runtime.log");
+    HANDLE file = CreateFileW(modulePath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return;
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t stamped[900] = {};
+    wchar_t prefix[64] = {};
+    wsprintfW(prefix, L"%02u:%02u:%02u.%03u ", now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+    lstrcpyW(stamped, prefix);
+    lstrcatW(stamped, message ? message : L"");
+    lstrcatW(stamped, L"\r\n");
+    int length = lstrlenW(stamped);
+    DWORD written = 0;
+    if (length > 0) WriteFile(file, stamped, (DWORD)(length * sizeof(wchar_t)), &written, NULL);
+    CloseHandle(file);
+}
+
+static void TraySRuntimeLogFormat(const wchar_t* format, ...)
+{
+	if (!format)
+		return;
+	wchar_t message[768] = {};
+	va_list args;
+	va_start(args, format);
+	vswprintf(message, ARRAYSIZE(message), format, args);
+	va_end(args);
+	TraySRuntimeLog(message);
+}
+
+// WM_ERASEBKGND is not a reliable paint notification for a modeless,
+// layered dialog.  Keep a small diagnostic counter so a build can prove that
+// the real WM_PAINT path is running and that the ARGB surface contains pixels.
+static volatile LONG gTaskBarPaintCount = 0;
+static BOOL gTaskBarColorKeyed = FALSE;
+
+static void ApplyTaskBarColorKey(COLORREF colorKey)
+{
+	if (!IsWindow(hTaskBar))
+		return;
+	SetLayeredWindowAttributes(hTaskBar, colorKey, 0, LWA_COLORKEY);
+	gTaskBarColorKeyed = TRUE;
+}
+
+static void ResetTaskBarLayeredSurfaceForArgb(BOOL force = FALSE)
+{
+	if (!IsWindow(hTaskBar) || (!gTaskBarColorKeyed && !force))
+		return;
+	LONG_PTR exStyle = GetWindowLongPtr(hTaskBar, GWL_EXSTYLE);
+	if (exStyle & WS_EX_LAYERED)
+	{
+		SetWindowLongPtr(hTaskBar, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
+		SetWindowPos(hTaskBar, NULL, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
+		SetWindowLongPtr(hTaskBar, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
+		SetWindowPos(hTaskBar, HWND_TOPMOST, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+	}
+	gTaskBarColorKeyed = FALSE;
+}
+
+// GDI's color-keyed layered windows blend antialiased glyph edges with the
+// key color before the key is removed.  On a light/translucent Win11 taskbar
+// those intermediate pixels are visible as a thin dark outline.  The
+// composition path therefore renders glyph coverage into a grayscale mask and
+// composites the requested text color into a premultiplied ARGB DIB.  The
+// legacy taskbar path never enables this state and keeps its existing pixels.
+struct ArgbTextSurfaceState
+{
+	BYTE* bits = NULL;
+	int width = 0;
+	int height = 0;
+	int stride = 0;
+	HDC maskDC = NULL;
+	HBITMAP maskBitmap = NULL;
+	BYTE* maskBits = NULL;
+	int maskStride = 0;
+	BOOL active = FALSE;
+};
+static ArgbTextSurfaceState g_argbTextSurface;
+
+static void EndArgbTextRender()
+{
+	g_argbTextSurface.active = FALSE;
+	if (g_argbTextSurface.maskBitmap)
+		DeleteObject(g_argbTextSurface.maskBitmap);
+	if (g_argbTextSurface.maskDC)
+		DeleteDC(g_argbTextSurface.maskDC);
+	g_argbTextSurface = ArgbTextSurfaceState{};
+}
+
+static void BeginArgbTextRender(BYTE* bits, int width, int height, int stride)
+{
+	EndArgbTextRender();
+	if (!bits || width <= 0 || height <= 0 || stride < width * 4)
+		return;
+	BITMAPINFO info{};
+	info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	info.bmiHeader.biWidth = width;
+	info.bmiHeader.biHeight = -height;
+	info.bmiHeader.biPlanes = 1;
+	info.bmiHeader.biBitCount = 32;
+	info.bmiHeader.biCompression = BI_RGB;
+	HDC maskDC = CreateCompatibleDC(NULL);
+	if (!maskDC)
+		return;
+	BYTE* maskBits = NULL;
+	HBITMAP maskBitmap = CreateDIBSection(maskDC, &info, DIB_RGB_COLORS, (void**)&maskBits, NULL, 0);
+	if (!maskBitmap || !maskBits)
+	{
+		if (maskBitmap)
+			DeleteObject(maskBitmap);
+		DeleteDC(maskDC);
+		return;
+	}
+	if (!SelectObject(maskDC, maskBitmap))
+	{
+		DeleteObject(maskBitmap);
+		DeleteDC(maskDC);
+		return;
+	}
+	g_argbTextSurface.bits = bits;
+	g_argbTextSurface.width = width;
+	g_argbTextSurface.height = height;
+	g_argbTextSurface.stride = stride;
+	g_argbTextSurface.maskDC = maskDC;
+	g_argbTextSurface.maskBitmap = maskBitmap;
+	g_argbTextSurface.maskBits = maskBits;
+	g_argbTextSurface.maskStride = width * 4;
+	g_argbTextSurface.active = TRUE;
+}
+
+static void BlendArgbMask(const RECT& inputRect, COLORREF color)
+{
+	if (!g_argbTextSurface.active || !g_argbTextSurface.bits || !g_argbTextSurface.maskBits)
+		return;
+	RECT rect = inputRect;
+	if (rect.left < 0) rect.left = 0;
+	if (rect.top < 0) rect.top = 0;
+	if (rect.right > g_argbTextSurface.width) rect.right = g_argbTextSurface.width;
+	if (rect.bottom > g_argbTextSurface.height) rect.bottom = g_argbTextSurface.height;
+	if (rect.right <= rect.left || rect.bottom <= rect.top)
+		return;
+	const BYTE red = GetRValue(color);
+	const BYTE green = GetGValue(color);
+	const BYTE blue = GetBValue(color);
+	for (int y = rect.top; y < rect.bottom; ++y)
+	{
+		BYTE* maskRow = g_argbTextSurface.maskBits + (SIZE_T)y * g_argbTextSurface.maskStride;
+		BYTE* dstRow = g_argbTextSurface.bits + (SIZE_T)y * g_argbTextSurface.stride;
+		for (int x = rect.left; x < rect.right; ++x)
+		{
+			BYTE* maskPixel = maskRow + (SIZE_T)x * 4;
+			BYTE coverage = maskPixel[0];
+			if (maskPixel[1] > coverage) coverage = maskPixel[1];
+			if (maskPixel[2] > coverage) coverage = maskPixel[2];
+			if (coverage == 0)
+				continue;
+			BYTE* dst = dstRow + (SIZE_T)x * 4;
+			const unsigned int inverse = 255u - coverage;
+			const unsigned int dstAlpha = dst[3];
+			const unsigned int srcBlue = (unsigned int)blue * coverage / 255u;
+			const unsigned int srcGreen = (unsigned int)green * coverage / 255u;
+			const unsigned int srcRed = (unsigned int)red * coverage / 255u;
+			dst[0] = (BYTE)(srcBlue + ((unsigned int)dst[0] * inverse + 127u) / 255u);
+			dst[1] = (BYTE)(srcGreen + ((unsigned int)dst[1] * inverse + 127u) / 255u);
+			dst[2] = (BYTE)(srcRed + ((unsigned int)dst[2] * inverse + 127u) / 255u);
+			dst[3] = (BYTE)(coverage + (dstAlpha * inverse + 127u) / 255u);
+		}
+	}
+}
+
+static BOOL RenderArgbTextPass(HDC sourceDC, LPCTSTR text, int count, const RECT& rect, UINT format, COLORREF color)
+{
+	if (!g_argbTextSurface.active || !g_argbTextSurface.maskDC || !sourceDC)
+		return FALSE;
+	const SIZE_T maskBytes = (SIZE_T)g_argbTextSurface.maskStride * (SIZE_T)g_argbTextSurface.height;
+	ZeroMemory(g_argbTextSurface.maskBits, maskBytes);
+	HFONT sourceFont = (HFONT)GetCurrentObject(sourceDC, OBJ_FONT);
+	if (!sourceFont)
+		return FALSE;
+	HFONT oldFont = (HFONT)SelectObject(g_argbTextSurface.maskDC, sourceFont);
+	SetBkMode(g_argbTextSurface.maskDC, TRANSPARENT);
+	SetTextColor(g_argbTextSurface.maskDC, RGB(255, 255, 255));
+	RECT drawRect = rect;
+	DrawText(g_argbTextSurface.maskDC, text, count, &drawRect, format);
+	RECT scanRect = rect;
+	InflateRect(&scanRect, 2, 2);
+	BlendArgbMask(scanRect, color);
+	if (oldFont && oldFont != (HFONT)HGDI_ERROR)
+		SelectObject(g_argbTextSurface.maskDC, oldFont);
+	return TRUE;
+}
+
+BOOL TryDrawShadowTextArgb(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat, COLORREF bColor, BOOL bYes)
+{
+	if (!g_argbTextSurface.active || !hDC || !lpRect || !lpString)
+		return FALSE;
+	COLORREF textColor = GetTextColor(hDC);
+	if (bYes)
+	{
+		RECT shadowRect = *lpRect;
+		OffsetRect(&shadowRect, 1, 0);
+		RenderArgbTextPass(hDC, lpString, nCount, shadowRect, uFormat, bColor);
+		OffsetRect(&shadowRect, -1, 1);
+		RenderArgbTextPass(hDC, lpString, nCount, shadowRect, uFormat, bColor);
+		OffsetRect(&shadowRect, -1, -1);
+		RenderArgbTextPass(hDC, lpString, nCount, shadowRect, uFormat, bColor);
+		OffsetRect(&shadowRect, 1, -1);
+		RenderArgbTextPass(hDC, lpString, nCount, shadowRect, uFormat, bColor);
+		OffsetRect(&shadowRect, 0, 3);
+		RenderArgbTextPass(hDC, lpString, nCount, shadowRect, uFormat, bColor);
+	}
+	RenderArgbTextPass(hDC, lpString, nCount, *lpRect, uFormat, textColor);
+	return TRUE;
+}
+
+static int GetMonitorOffsetX()
+{
+	return (int)(LONG)TraySave.dNumValues2[3];
+}
+
+static int GetMonitorOffsetY()
+{
+	return (int)(LONG)TraySave.dNumValues2[4];
+}
+
+static void SetMonitorOffset(int x, int y)
+{
+	if (x < -4096) x = -4096;
+	if (x > 4096) x = 4096;
+	if (y < -4096) y = -4096;
+	if (y > 4096) y = 4096;
+	TraySave.dNumValues2[3] = (DWORD)(LONG)x;
+	TraySave.dNumValues2[4] = (DWORD)(LONG)y;
+}
+
+static void UpdateMonitorOffsetControls(HWND hDlg)
+{
+	if (!IsWindow(hDlg))
+		return;
+	const int offsetX = GetMonitorOffsetX();
+	const int offsetY = GetMonitorOffsetY();
+	SendDlgItemMessage(hDlg, IDC_SLIDER_OFFSET_X, TBM_SETPOS, TRUE, offsetX);
+	SendDlgItemMessage(hDlg, IDC_SLIDER_OFFSET_Y, TBM_SETPOS, TRUE, offsetY);
+	WCHAR text[32] = {};
+	wsprintfW(text, L"%d px", offsetX);
+	SetDlgItemTextW(hDlg, IDC_LABEL_OFFSET_X, text);
+	wsprintfW(text, L"%d px", offsetY);
+	SetDlgItemTextW(hDlg, IDC_LABEL_OFFSET_Y, text);
+}
+
+static BOOL IsWin11ArgbTaskBar()
+{
+	return hWin11UI != NULL && !TraySave.bMonitorFloat && !bFullScreen;
+}
 
 // Keep all DLL loads inside the directories we explicitly trust. The
 // original project passed bare names to LoadLibrary, which allowed the
@@ -299,9 +576,103 @@ static BOOL GetScreenRectSafe(HWND hWnd, LPRECT lpRect, BOOL bTray)
 	return TRUE;
 }
 
+// Recent Windows 11 taskbars expose several of their child windows through a
+// XAML/composition bridge.  FindWindowEx is not reliable for those windows on
+// every 22H2/23H2/24H2 build (it can return NULL even though the window is
+// present and visible).  EnumChildWindows still reports the real HWNDs, so use
+// a bounded class-name walk for Shell discovery and fail closed if Explorer is
+// rebuilding the hierarchy during the enumeration.
+struct FIND_CHILD_CLASS_CONTEXT
+{
+	LPCWSTR className;
+	HWND found;
+	DWORD visited;
+};
+
+static BOOL CALLBACK FindChildClassProc(HWND hWnd, LPARAM lParam)
+{
+	FIND_CHILD_CLASS_CONTEXT* context = reinterpret_cast<FIND_CHILD_CLASS_CONTEXT*>(lParam);
+	if (!context || !context->className || !IsWindow(hWnd))
+		return TRUE;
+	if (++context->visited > 4096)
+		return FALSE;
+	WCHAR className[128] = {};
+	int length = GetClassNameW(hWnd, className, ARRAYSIZE(className));
+	if (length > 0 && lstrcmpW(className, context->className) == 0)
+	{
+		context->found = hWnd;
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static HWND FindDescendantByClass(HWND root, LPCWSTR className)
+{
+	if (!IsWindow(root) || !className || !className[0])
+		return NULL;
+	FIND_CHILD_CLASS_CONTEXT context = { className, NULL, 0 };
+	EnumChildWindows(root, FindChildClassProc, reinterpret_cast<LPARAM>(&context));
+	return IsWindow(context.found) ? context.found : NULL;
+}
+
+static BOOL IsLayoutDpiAware()
+{
+	// The portable compatibility executable intentionally has no DPI manifest,
+	// so Windows may virtualize its taskbar coordinates. In that mode the shell
+	// already scales the surface and applying iDPI to the font would double the
+	// size at 150%/200%. Only a genuinely DPI-aware process should scale here.
+	typedef BOOL(WINAPI* IsProcessDpiAwareFn)();
+	static IsProcessDpiAwareFn isProcessDpiAware = NULL;
+	static BOOL resolved = FALSE;
+	if (!resolved)
+	{
+		HMODULE user32 = GetModuleHandleW(L"user32.dll");
+		if (user32)
+			isProcessDpiAware = (IsProcessDpiAwareFn)GetProcAddress(user32, "IsProcessDPIAware");
+		resolved = TRUE;
+	}
+	return isProcessDpiAware ? isProcessDpiAware() : FALSE;
+}
+
 int DPI(int pixel)
 {
-	return pixel * iDPI / 96;
+	// The compatibility build opts into per-monitor awareness before creating
+	// any window. Scale the logical font metrics exactly once so Windows does
+	// not bitmap-scale the finished monitor surface at 150%/200%. Legacy
+	// builds remain on the original 96-DPI path.
+	if (!IsLayoutDpiAware() || iDPI <= 96)
+		return pixel;
+	long long scaled = (long long)pixel * (long long)iDPI / 96;
+	if (scaled > INT_MAX)
+		return INT_MAX;
+	if (scaled < INT_MIN)
+		return INT_MIN;
+	return (int)scaled;
+}
+
+static void ConfigurePortableDpiAwareness()
+{
+#if defined(TRAYS_PORTABLE_COMPAT)
+	// Resolve dynamically so the normal MSVC build keeps its existing startup
+	// behavior and the portable EXE still runs on older Windows 10 builds.
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	if (!user32)
+		return;
+	typedef BOOL(WINAPI* SetProcessDpiAwarenessContextFn)(HANDLE);
+	SetProcessDpiAwarenessContextFn setContext =
+		(SetProcessDpiAwarenessContextFn)GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+	if (setContext)
+	{
+		// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is (HANDLE)-4.
+		if (setContext((HANDLE)(LONG_PTR)-4))
+			return;
+	}
+	typedef BOOL(WINAPI* SetProcessDpiAwareFn)();
+	SetProcessDpiAwareFn setLegacy =
+		(SetProcessDpiAwareFn)GetProcAddress(user32, "SetProcessDPIAware");
+	if (setLegacy)
+		setLegacy();
+#endif
 }
 
 COLORREF GetWindowPixel(HWND hWnd)
@@ -962,6 +1333,14 @@ static void NormalizeTraySave()
 			TraySave.aMode[i] != ACCENT_ENABLE_ACRYLICBLURBEHIND)
 			TraySave.aMode[i] = ACCENT_DISABLED;
 	}
+	// dNumValues2[3] and [4] are reserved in the legacy raw config and now
+	// hold the optional horizontal/vertical taskbar calibration offsets.
+	LONG monitorOffsetX = (LONG)TraySave.dNumValues2[3];
+	LONG monitorOffsetY = (LONG)TraySave.dNumValues2[4];
+	if (monitorOffsetX < -4096 || monitorOffsetX > 4096)
+		TraySave.dNumValues2[3] = 0;
+	if (monitorOffsetY < -4096 || monitorOffsetY > 4096)
+		TraySave.dNumValues2[4] = 0;
 }
 
 void ReadReg()//读取设置
@@ -1033,18 +1412,29 @@ void GetShellAllWnd()
 	}
 	if (!IsWindow(hTray))
 		return;
-	hReBarWnd = FindWindowEx(hTray, 0, L"ReBarWindow32", NULL);
-	hStartWnd = FindWindowEx(hTray, 0, L"Start", NULL);
-	hTrayNotifyWnd = FindWindowEx(hTray, 0, L"TrayNotifyWnd", NULL);
-	if(hReBarWnd)
-		hTaskWnd = FindWindowEx(hReBarWnd, NULL, L"MSTaskSwWClass", NULL);
-	if(hTaskWnd)
-		hTaskListWnd = FindWindowEx(hTaskWnd, NULL, L"MSTaskListWClass", NULL);
-	if(hTaskWnd && !hTaskListWnd)
-		hTaskListWnd = FindWindowEx(hTaskWnd, NULL, L"ToolbarWindow32", NULL);
-	hWin11UI = FindWindowEx(hTray, 0, L"Windows.UI.Composition.DesktopWindowContentBridge", NULL);
-	if(hTrayNotifyWnd)
-		hTrayClockWnd = FindWindowEx(hTrayNotifyWnd, NULL, L"TrayClockWClass", NULL);
+	// Use descendant enumeration instead of assuming the historical direct
+	// parent/child layout.  Explorer has inserted intermediary XAML hosts on
+	// newer Windows builds, and FindWindowEx may miss the real task-list HWND.
+	hReBarWnd = FindDescendantByClass(hTray, L"ReBarWindow32");
+	hStartWnd = FindDescendantByClass(hTray, L"Start");
+	hTrayNotifyWnd = FindDescendantByClass(hTray, L"TrayNotifyWnd");
+	if (hReBarWnd)
+		hTaskWnd = FindDescendantByClass(hReBarWnd, L"MSTaskSwWClass");
+	// Some Explorer revisions remove or replace ReBarWindow32 while keeping
+	// the task-list classes alive elsewhere in the same taskbar subtree.
+	if (!hTaskWnd)
+		hTaskWnd = FindDescendantByClass(hTray, L"MSTaskSwWClass");
+	if (hTaskWnd)
+		hTaskListWnd = FindDescendantByClass(hTaskWnd, L"MSTaskListWClass");
+	if (hTaskWnd && !hTaskListWnd)
+		hTaskListWnd = FindDescendantByClass(hTaskWnd, L"ToolbarWindow32");
+	if (!hTaskListWnd)
+		hTaskListWnd = FindDescendantByClass(hTray, L"MSTaskListWClass");
+	if (!hTaskListWnd)
+		hTaskListWnd = FindDescendantByClass(hTray, L"ToolbarWindow32");
+	hWin11UI = FindDescendantByClass(hTray, L"Windows.UI.Composition.DesktopWindowContentBridge");
+	if (hTrayNotifyWnd)
+		hTrayClockWnd = FindDescendantByClass(hTrayNotifyWnd, L"TrayClockWClass");
 /*
 	if (hWin11UI)
 	{
@@ -1057,6 +1447,10 @@ void CloseTaskBar()
 {
 	if (IsWindow(hTaskBar))
 		DestroyWindow(hTaskBar);
+	// DestroyWindow is synchronous on the UI thread, but keep the shared
+	// handles unambiguous for Explorer/theme rebuilds and for the worker's
+	// refresh notifications.
+	hTaskBar = NULL;
 	if (IsWindow(hTaskTips))
 		DestroyWindow(hTaskTips);
 	if (IsWindow(hPrice))
@@ -1064,6 +1458,76 @@ void CloseTaskBar()
 	if(IsWindow(hTime))
 		DestroyWindow(hTime);	
 }
+
+// Keep the monitor window in the same windowing model as the taskbar that is
+// currently detected.  Windows 11's XAML/composition taskbar cannot reliably
+// composite a foreign child window, while the legacy taskbar expects the
+// monitor to be a child of Shell_TrayWnd.  Explorer can rebuild this hierarchy
+// while TrayS is running, so this is intentionally safe to call on every
+// positioning pass.
+static void ConfigureTaskBarWindowMode()
+{
+	if (!IsWindow(hTaskBar))
+		return;
+	const BOOL embedInLegacyTaskbar = (!TraySave.bMonitorFloat && !bFullScreen && hWin11UI == NULL);
+	LONG_PTR oldStyle = GetWindowLongPtr(hTaskBar, GWL_STYLE);
+	LONG_PTR style = oldStyle;
+	if (embedInLegacyTaskbar)
+	{
+		if (IsWindow(hTray) && (GetParent(hTaskBar) != hTray || GetAncestor(hTaskBar, GA_PARENT) != hTray))
+			SetParent(hTaskBar, hTray);
+		style &= ~WS_POPUP;
+		style |= WS_CHILD;
+	}
+	else
+	{
+		// A composition taskbar needs a real top-level popup so DWM can compose
+		// the GDI surface.  Detach only when we know the old parent is the shell;
+		// this avoids accidentally detaching from an unrelated owner.
+		if (IsWindow(hTray) && (GetParent(hTaskBar) == hTray || GetAncestor(hTaskBar, GA_PARENT) == hTray))
+			SetParent(hTaskBar, NULL);
+		style &= ~WS_CHILD;
+		style |= WS_POPUP;
+	}
+	if (style != oldStyle)
+		SetWindowLongPtr(hTaskBar, GWL_STYLE, style);
+
+	LONG_PTR oldExStyle = GetWindowLongPtr(hTaskBar, GWL_EXSTYLE);
+	LONG_PTR exStyle = oldExStyle;
+	if (!TraySave.bMonitorFloat && !bFullScreen)
+		exStyle |= WS_EX_LAYERED;
+	if (exStyle != oldExStyle)
+		SetWindowLongPtr(hTaskBar, GWL_EXSTYLE, exStyle);
+	if (style != oldStyle || exStyle != oldExStyle ||
+		(!embedInLegacyTaskbar && !(exStyle & WS_EX_TOPMOST)))
+	{
+		SetLastError(ERROR_SUCCESS);
+		BOOL zOrderResult = SetWindowPos(hTaskBar, embedInLegacyTaskbar ? NULL : HWND_TOPMOST, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED |
+			(embedInLegacyTaskbar ? SWP_NOZORDER : 0));
+		if (!zOrderResult)
+			TraySRuntimeLogFormat(L"TaskBar zorder configure failed hwnd=%p err=%lu",
+				hTaskBar, GetLastError());
+	}
+	if (!TraySave.bMonitorFloat && !bFullScreen && !IsWin11ArgbTaskBar())
+	{
+		// Win11's XAML taskbar does not expose a stable GDI pixel to sample.
+		// Use a reserved near-black key that TrayBarProc also paints exactly;
+		// sampling the taskbar here can produce a black opaque rectangle when
+		// DWM changes the composition surface between timer ticks.
+		COLORREF colorKey = hWin11UI != NULL ? RGB(0, 0, 1) : GetWindowPixel(hTray);
+		ApplyTaskBarColorKey(colorKey);
+	}
+	else if (IsWin11ArgbTaskBar())
+	{
+		// SetLayeredWindowAttributes permanently switches a layered HWND to
+		// color-key mode.  If Explorer briefly loses the XAML bridge and then
+		// restores it, the same HWND would otherwise make every later
+		// UpdateLayeredWindow call fail with ERROR_INVALID_PARAMETER (87).
+		ResetTaskBarLayeredSurfaceForArgb();
+	}
+}
+
 void OpenTimeDlg()
 {
 	if (!IsWindow(hTime) && TraySave.bSecond)
@@ -1120,8 +1584,6 @@ void OpenTaskBar()
 				TraySave.bMonitorFuse = FALSE;
 				if (TraySave.cMonitorColor[0] == 0)
 					TraySave.cMonitorColor[0] = RGB(0, 0, 1);
-				SetWindowLongPtr(hTaskBar, GWL_EXSTYLE, GetWindowLongPtr(hTaskBar, GWL_EXSTYLE) | WS_EX_LAYERED);
-				SetLayeredWindowAttributes(hTaskBar, GetWindowPixel(hTray), 0, LWA_COLORKEY);
 
 /*
 					if (bThemeMode)
@@ -1132,15 +1594,33 @@ void OpenTaskBar()
 //				else
 //					SetParent(hTaskBar, GetForegroundWindow());
 			}
-			if(!TraySave.bMonitorFloat&&!bFullScreen)
-				SetParent(hTaskBar, hTray);
+			if (hWin11UI != NULL && !TraySave.bMonitorFloat && !bFullScreen)
+			{
+				// Do not use the legacy shadow/fuse background on the Win11
+				// composition overlay. It reads visually as a black rectangle
+				// around the text when the taskbar itself is translucent.
+				bShadow = FALSE;
+				TraySave.bMonitorFuse = FALSE;
+			}
+			// Configure before the first position calculation.  In particular, the
+			// Win11 composition path must remain a top-level popup; making it a
+			// Shell_TrayWnd child leaves a hit-testable but invisible GDI surface.
+			ConfigureTaskBarWindowMode();
 			SetWH();
 			if (!TraySave.bMonitorFuse && TraySave.bMonitorFloat)
 			{
 			}
-			else
+			else if (hWin11UI == NULL)
 				SetWindowCompositionAttribute(hTaskBar, ACCENT_ENABLE_TRANSPARENT, 0x00111111);
 			ShowWindow(hTaskBar, SW_SHOW);
+			// Layered/composition popups do not always receive an initial paint
+			// after Explorer attaches them to the taskbar.  Force the first frame
+			// here so the monitor is visible before the pointer enters its bounds.
+			InvalidateRect(hTaskBar, NULL, TRUE);
+			UpdateWindow(hTaskBar);
+			if (hWin11UI != NULL && !TraySave.bMonitorFloat && !bFullScreen)
+				SetWindowPos(hTaskBar, HWND_TOPMOST, 0, 0, 0, 0,
+					SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
 			if (TraySave.bMonitorTransparent&&TraySave.bMonitorFloat)
 				SetWindowLongPtr(hTaskBar, GWL_EXSTYLE, GetWindowLongPtr(hTaskBar, GWL_EXSTYLE) |WS_EX_LAYERED |WS_EX_TRANSPARENT);
 			SetTimer(hTaskBar, 3, 1000, NULL);
@@ -1280,12 +1760,14 @@ void LoadTemperatureDLL()
 		if (NvAPI_QueryInterface)
 		{
 			NvAPI_Initialize_t NvAPI_Initialize = (NvAPI_Initialize_t)NvAPI_QueryInterface(ID_NvAPI_Initialize);
+			NvAPI_Unload = (NvAPI_Unload_t)NvAPI_QueryInterface(ID_NvAPI_Unload);
 			NvAPI_EnumPhysicalGPUs_t NvAPI_EnumPhysicalGPUs = (NvAPI_EnumPhysicalGPUs_t)NvAPI_QueryInterface(ID_NvAPI_EnumPhysicalGPUs);
 			NvAPI_GPU_GetThermalSettings = (NvAPI_GPU_GetThermalSettings_t)NvAPI_QueryInterface(ID_NvAPI_GPU_GetThermalSettings);
 			if (NvAPI_Initialize != NULL && NvAPI_EnumPhysicalGPUs != NULL && NvAPI_GPU_GetThermalSettings != NULL)
 			{
 				if (NvAPI_Initialize() == 0)
 				{
+					g_nvapiInitialized = TRUE;
 					for (NvU32 PhysicalGpuIndex = 0; PhysicalGpuIndex < NVAPI_MAX_PHYSICAL_GPUS; PhysicalGpuIndex++)
 					{
 						hPhysicalGpu[PhysicalGpuIndex] = 0;
@@ -1364,10 +1846,17 @@ static void FreeTemperatureDLLUnlocked()
 	ADL_Overdrive5_Temperature_Get = NULL;
 	if (hNVDLL)
 	{
+		// NvAPI_Initialize increments the driver's reference count. Pair it
+		// with NvAPI_Unload before dropping the module handle so repeated
+		// temperature-monitor toggles do not retain driver state.
+		if (g_nvapiInitialized && NvAPI_Unload)
+			NvAPI_Unload();
 		FreeLibrary(hNVDLL);
 		hNVDLL = NULL;
 	}
+	g_nvapiInitialized = FALSE;
 	NvAPI_QueryInterface = NULL;
+	NvAPI_Unload = NULL;
 	NvAPI_GPU_GetThermalSettings = NULL;
 	for (DWORD i = 0; i < NVAPI_MAX_PHYSICAL_GPUS; ++i)
 		hPhysicalGpu[i] = NULL;
@@ -1388,16 +1877,34 @@ void FreeTemperatureDLL()
 ///////////////////////////////////////////////打开读取设置
 void OpenSetting()
 {
+    TraySRuntimeLog(L"OpenSetting enter");
+    bSetting = FALSE;
 	if (IsWindow(hSetting))
 	{
+		// The settings dialog is modeless.  A previous invocation may have
+		// left it hidden or minimized (for example after Explorer rebuilt the
+		// taskbar), so merely activating the HWND is not enough to make it
+		// visible again.  Restore the complete show/activation state every time.
+		if (IsIconic(hSetting))
+			ShowWindow(hSetting, SW_RESTORE);
+		ShowWindow(hSetting, SW_SHOWNORMAL);
+		BringWindowToTop(hSetting);
 		SetForegroundWindow(hSetting);
-		return;
-	}
-	hSetting = ::CreateDialog(hInst, MAKEINTRESOURCE(IDD_SETTING), NULL, (DLGPROC)SettingProc);
-	if (!hSetting)
-	{
-		return;
-	}
+        SetActiveWindow(hSetting);
+        TraySRuntimeLog(L"OpenSetting reused existing dialog");
+        return;
+    }
+    SetLastError(ERROR_SUCCESS);
+    hSetting = ::CreateDialog(hInst, MAKEINTRESOURCE(IDD_SETTING), NULL, (DLGPROC)SettingProc);
+    if (!hSetting)
+    {
+        wchar_t errorText[128] = {};
+        wsprintfW(errorText, L"CreateDialog(IDD_SETTING) failed err=%lu", GetLastError());
+        TraySRuntimeLog(errorText);
+        return;
+    }
+    TraySRuntimeLog(L"CreateDialog succeeded");
+    bSetting = TRUE;
 	SendMessage(hSetting, WM_SETICON, ICON_BIG, (LPARAM)(HICON)iMain);
 	SendMessage(hSetting, WM_SETICON, ICON_SMALL, (LPARAM)(HICON)iMain);
 	CheckRadioButton(hSetting, IDC_RADIO_NORMAL, IDC_RADIO_MAXIMIZE, IDC_RADIO_NORMAL);
@@ -1464,6 +1971,9 @@ void OpenSetting()
 	SendDlgItemMessage(hSetting, IDC_SLIDER_ALPHA_B, TBM_SETRANGE, 0, MAKELPARAM(0, 255));
 	BYTE bAlphaB = TraySave.dAlphaColor[iProject] >> 24;
 	SendDlgItemMessage(hSetting, IDC_SLIDER_ALPHA_B, TBM_SETPOS, TRUE, bAlphaB);
+	SendDlgItemMessage(hSetting, IDC_SLIDER_OFFSET_X, TBM_SETRANGE, TRUE, MAKELPARAM(-300, 300));
+	SendDlgItemMessage(hSetting, IDC_SLIDER_OFFSET_Y, TBM_SETRANGE, TRUE, MAKELPARAM(-300, 300));
+	UpdateMonitorOffsetControls(hSetting);
 	SendDlgItemMessage(hSetting, IDC_CHECK_AUTORUN, BM_SETCHECK,
 		IsUserAutoRunEnabledSafe(szAppName), NULL);
 	CheckDlgButton(hSetting, IDC_CHECK_AUTO_UPDATE, g_autoUpdateEnabled);
@@ -1508,9 +2018,11 @@ void OpenSetting()
 	oldColorButtonPoroc = (WNDPROC)SetWindowLongPtr(GetDlgItem(hSetting, IDC_BUTTON_COLOR_HIGH), GWLP_WNDPROC, (LONG_PTR)ColorButtonProc);	
 	oldColorButtonPoroc = (WNDPROC)SetWindowLongPtr(GetDlgItem(hSetting, IDC_BUTTON_COLOR_PRICE_LOW), GWLP_WNDPROC, (LONG_PTR)ColorButtonProc);
 	oldColorButtonPoroc = (WNDPROC)SetWindowLongPtr(GetDlgItem(hSetting, IDC_BUTTON_COLOR_PRICE_HIGH), GWLP_WNDPROC, (LONG_PTR)ColorButtonProc);
-	ShowWindow(hSetting, SW_SHOW);
+	ShowWindow(hSetting, SW_SHOWNORMAL);
 	UpdateWindow(hSetting);
+	BringWindowToTop(hSetting);
 	SetForegroundWindow(hSetting);
+	SetActiveWindow(hSetting);
 }
 
 // TrayS now targets the Windows 10+ taskbar and composition APIs.  Refuse
@@ -1539,6 +2051,7 @@ static BOOL InitializeSupportedWindowsVersion()
 #ifndef _DEBUG
 extern "C" void WinMainCRTStartup()
 {
+	ConfigurePortableDpiAwareness();
 	ConfigureSafeDllSearch();
 	// The update helper must run before mappings, Explorer discovery, settings,
 	// or any optional hardware library can be touched by the normal UI path.
@@ -1549,6 +2062,7 @@ extern "C" void WinMainCRTStartup()
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
+	ConfigurePortableDpiAwareness();
 	ConfigureSafeDllSearch();
 	if (TryRunTraySUpdateCommandLine())
 		return 0;
@@ -1781,6 +2295,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 #endif
 	GetShellAllWnd();
 	hInst = GetModuleHandle(NULL); // 将实例句柄存储在全局变量中
+	INITCOMMONCONTROLSEX commonControls{};
+	commonControls.dwSize = sizeof(commonControls);
+	commonControls.dwICC = ICC_WIN95_CLASSES | ICC_BAR_CLASSES | ICC_LINK_CLASS;
+	InitCommonControlsEx(&commonControls);
 	ReadReg();
 	g_autoUpdateEnabled = ReadTraySAutoUpdateSetting();
 	if(!TraySave.bMonitorTips||!TraySave.bMonitor||TraySave.bMonitorTransparent)
@@ -1881,6 +2399,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 				// for this process to wait on.
 				ExitProcess(ERROR_TIMEOUT);
 			}
+			// The price worker is the only caller of the dynamically loaded
+			// WinHTTP entry points. Once it has exited, release the module and
+			// clear the function table instead of keeping winhttp.dll resident
+			// for the lifetime of the process.
+			UnloadWinHttp();
 			AcquireSRWLockExclusive(&g_processLock);
 			ClearProcessSnapshotUnlocked();
 			ReleaseSRWLockExclusive(&g_processLock);
@@ -1918,10 +2441,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 			if (hMutex)
 				CloseHandle(hMutex);
 			FreeTemperatureDLL();
-			UnmapViewOfFile(TrayData);
-			CloseHandle(hMap);
-			hMap = NULL;
-			ReleaseDC(NULL, hDesktopDC);
+			if (TrayData)
+			{
+				UnmapViewOfFile(TrayData);
+				TrayData = NULL;
+			}
+			if (hMap)
+			{
+				CloseHandle(hMap);
+				hMap = NULL;
+			}
+			if (hDesktopDC)
+			{
+				ReleaseDC(NULL, hDesktopDC);
+				hDesktopDC = NULL;
+			}
 		}
 	}
 	if (hMap)
@@ -2504,11 +3038,15 @@ DWORD WINAPI GetDataThreadProc(PVOID pParam)//获取温度占用硬盘线程
 			{
 				if (IsWindowVisible(hTaskTips))
 					::InvalidateRect(hTaskTips, NULL, TRUE);
+				// The monitor belongs to the UI thread.  Invalidate it there instead
+				// of touching a modeless dialog from this worker thread; cross-thread
+				// painting can leave a layered popup visible with an old/empty frame.
+				if (IsWindow(hMain))
+					PostMessage(hMain, WM_APP_TRAYS_MONITOR_REFRESH, 0, 0);
 				DWORD dm = GetSystemUsesLightThemeSafe();
 				if (dm != bThemeMode)
 				{
-					DestroyWindow(hTime);
-					DestroyWindow(hTaskBar);
+					PostMessage(hMain, WM_APP_TRAYS_THEME_CHANGED, 0, 0);
 					bThemeMode = dm;
 				}
 
@@ -2535,8 +3073,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 	hMain = ::CreateDialog(hInst, MAKEINTRESOURCE(IDD_MAIN), NULL, (DLGPROC)MainProc);
 	if (!hMain)
 	{
+		TraySRuntimeLog(L"InitInstance CreateDialog(IDD_MAIN) failed");
 		return FALSE;
 	}
+	TraySRuntimeLog(L"InitInstance main dialog created");
 	////////////////////////////////////////////////////////////当前DPI
 	hDesktopDC = GetDC(NULL);
 	HDC hdc = GetDC(hMain);
@@ -2551,7 +3091,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 	pSHAppBarMessage(ABM_NEW, &abd);
 	bThemeMode = GetSystemUsesLightThemeSafe();
 	//////////////////////////////////////////////////////////////////////////////////设置通知栏图标
-	nid.cbSize = sizeof NOTIFYICONDATA;
+	 nid.cbSize = sizeof(NOTIFYICONDATA);
 	nid.uID = WM_IAWENTRAY;
 	nid.hWnd = hMain;
 	nid.hIcon = iMain;
@@ -2562,7 +3102,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 	if (TraySave.bTrayIcon)
 		pShell_NotifyIcon(NIM_ADD, &nid);
 
-	MemoryStatusEx.dwLength = sizeof MEMORYSTATUSEX;
+	 MemoryStatusEx.dwLength = sizeof(MEMORYSTATUSEX);
 	GlobalMemoryStatusEx(&MemoryStatusEx);
 	if (TraySave.bMonitor)
 	{
@@ -2877,8 +3417,9 @@ void SetWH()
 	HDC mdc = GetDC(hMain);
 	if (mdc == NULL)
 		return;
-	TraySave.TraybarFont.lfHeight = DPI(TraySave.TraybarFontSize);
-	HFONT newFont = CreateFontIndirect(&TraySave.TraybarFont); //创建字体
+	LOGFONT monitorFont = TraySave.TraybarFont;
+	monitorFont.lfHeight = DPI(TraySave.TraybarFontSize);
+	HFONT newFont = CreateFontIndirect(&monitorFont); //创建字体
 	if (newFont == NULL)
 	{
 		ReleaseDC(hMain, mdc);
@@ -3051,9 +3592,10 @@ void AdjustWindowPos()//设置信息窗口位置大小
 		OpenTaskBar();
 	if (!IsWindow(hTaskBar))
 		return;
+	ConfigureTaskBarWindowMode();
 	if (TraySave.bSecond && IsWindow(hTime) == FALSE)
 		OpenTimeDlg();
-		if (TraySave.bMonitorFloat)
+	if (TraySave.bMonitorFloat)
 	{
 		RECT ScreenRect{};
 		if (!GetScreenRectSafe(hTaskBar, &ScreenRect, FALSE))
@@ -3135,7 +3677,12 @@ void AdjustWindowPos()//设置信息窗口位置大小
 		RECT trayrc{};
 		if (!GetWindowRect(hTray, &trayrc))
 			return;
-		if (!TraySave.bMonitorFloat && (!IsWindow(hTaskWnd) || !IsWindow(hTaskListWnd)))
+		// Win11 composition taskbars can temporarily omit the legacy task-list
+		// HWND.  The horizontal composition path can still anchor to the tray
+		// rectangle, so do not suppress the monitor window solely because those
+		// optional legacy handles are absent.  Vertical/legacy paths below retain
+		// their own GetWindowRect checks and fail closed.
+		if (!TraySave.bMonitorFloat && (!IsWindow(hTaskWnd) || !IsWindow(hTaskListWnd)) && !hWin11UI)
 			return;
 		if (trayrc.right - trayrc.left > trayrc.bottom - trayrc.top)
 			VTray = FALSE;
@@ -3146,12 +3693,13 @@ void AdjustWindowPos()//设置信息窗口位置大小
 			int nleft = trayrc.left;
 			if (hWin11UI)
 			{
-				RECT startrc, tasklistrc;
-				startrc.left = 88;
+				RECT startrc{}, tasklistrc{}, notifyrc{};
+				BOOL haveAnchor = FALSE;
 				if (IsWindow(hStartWnd) && IsWindow(hTaskListWnd) && GetWindowRect(hStartWnd, &startrc))
 				{
 					if (GetWindowRect(hTaskListWnd, &tasklistrc))
 					{
+						haveAnchor = TRUE;
 						BOOL bLeft = TraySave.bMonitorLeft;
 						if (startrc.left == trayrc.left)
 							bLeft = FALSE;
@@ -3159,11 +3707,11 @@ void AdjustWindowPos()//设置信息窗口位置大小
 						{
 							if (bLeft)
 							{
-								nleft = startrc.left - mWidth;
+						 nleft = startrc.left - mWidth;
 							}
 							else
 							{
-								nleft = tasklistrc.right;
+							nleft = tasklistrc.right;
 							}
 						}
 						else
@@ -3181,6 +3729,19 @@ void AdjustWindowPos()//设置信息窗口位置大小
 						}
 					}
 				}
+				// Composition builds can expose neither the legacy Start nor task
+				// list HWND while Explorer is rebuilding.  Anchor to the notification
+				// area when available, then fall back to the right edge of the tray.
+				if (!haveAnchor && IsWindow(hTrayNotifyWnd) && GetWindowRect(hTrayNotifyWnd, &notifyrc))
+				{
+					haveAnchor = TRUE;
+					if (TraySave.bNear && TraySave.bMonitorLeft)
+						nleft = trayrc.left;
+					else
+						nleft = notifyrc.left - mWidth;
+				}
+				if (!haveAnchor)
+					nleft = trayrc.right - mWidth;
 			}
 			else
 			{
@@ -3207,20 +3768,40 @@ void AdjustWindowPos()//设置信息窗口位置大小
 					}
 				}
 			}
+			nleft += GetMonitorOffsetX();
 			int h = wHeight * 2;
 			int ntop;
-			if (trayrc.bottom - trayrc.top < h)
+			if (hWin11UI != NULL && !bFullScreen)
 			{
-				h = trayrc.bottom - trayrc.top - 2;
-				if (h <= 0)
-					h = 1;
-				ntop = trayrc.top;
+				// Composition popups use screen coordinates.  Anchor the bottom
+				// edge to the taskbar bottom so both rows remain inside the bar;
+				// the old centered calculation placed the first row above it.
+				int taskbarHeight = trayrc.bottom - trayrc.top;
+				if (taskbarHeight <= 0)
+					taskbarHeight = 1;
+				const int bottomInset = 2;
+				if (h > taskbarHeight - bottomInset)
+					h = taskbarHeight > bottomInset ? taskbarHeight - bottomInset : 1;
+				ntop = trayrc.bottom - h - bottomInset;
+				if (ntop < trayrc.top)
+					ntop = trayrc.top;
 			}
 			else
-				ntop = (trayrc.bottom - trayrc.top - h) / 2 + trayrc.top;
-			//		if (!hWin11UI)
-			if(!bFullScreen)
-				ntop -= trayrc.top;
+			{
+				if (trayrc.bottom - trayrc.top < h)
+				{
+					h = trayrc.bottom - trayrc.top - 2;
+					if (h <= 0)
+						h = 1;
+					ntop = trayrc.top;
+				}
+				else
+					ntop = (trayrc.bottom - trayrc.top - h) / 2 + trayrc.top;
+				// Child windows use taskbar-client coordinates.
+				if(!bFullScreen && hWin11UI == NULL)
+					ntop -= trayrc.top;
+			}
+			ntop += GetMonitorOffsetY();
 /*
 			if (hWin11UI)
 				ntop += 1;
@@ -3240,7 +3821,10 @@ void AdjustWindowPos()//设置信息窗口位置大小
 				ottop = ntop;
 				//			::InvalidateRect(hTaskBar, NULL, TRUE);
 				//			if (!hWin11UI)
-				if(bFullScreen)
+				if (hWin11UI != NULL && !bFullScreen)
+					SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth > 0 ? mWidth : 1, h,
+						SWP_NOACTIVATE | SWP_SHOWWINDOW);
+				else if(bFullScreen)
 					SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth > 0 ? mWidth : 1, h, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
 				else
 					MoveWindow(hTaskBar, nleft, ntop, mWidth > 0 ? mWidth : 1, h, TRUE);
@@ -3250,20 +3834,29 @@ void AdjustWindowPos()//设置信息窗口位置大小
 			}
 			//		else if(hWin11UI)
 			//			SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth, h, SWP_NOACTIVATE|SWP_NOREDRAW|SWP_NOSIZE|SWP_NOMOVE|SWP_SHOWWINDOW);
-			if(bFullScreen)
+			if (hWin11UI != NULL && !bFullScreen)
+				SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth, h,
+					SWP_NOACTIVATE | SWP_SHOWWINDOW);
+			else if(bFullScreen)
 				SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth, h, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW);
 		}
 		else
 		{
 			int ntop;
-			RECT taskrc{};
-			if (!GetWindowRect(hTaskWnd, &taskrc))
+			// A composition-only vertical taskbar may not expose the legacy
+			// MSTaskSwWClass window.  The taskbar rectangle is a safe anchor in
+			// that case; legacy layouts still fail closed if their task window
+			// disappears during an Explorer restart.
+			RECT taskrc = trayrc;
+			if (!GetWindowRect(hTaskWnd, &taskrc) && !hWin11UI)
 				return;
 			if (TraySave.bMonitorLeft)
 				ntop = taskrc.top+2;
 			else
 				ntop = taskrc.bottom - mHeight;
-			int nleft = 1;
+			int nleft = (hWin11UI != NULL && !bFullScreen) ? trayrc.left + 1 : 1;
+			nleft += GetMonitorOffsetX();
+			ntop += GetMonitorOffsetY();
 			int w = trayrc.right - trayrc.left - 2;
 			if (w <= 0)
 				w = 1;
@@ -3289,6 +3882,16 @@ void AdjustWindowPos()//设置信息窗口位置大小
 					MoveWindow(hTaskBar, nleft, ntop, w, verticalHeight, TRUE);
 			}
 		}
+	}
+	// The position pass above is where a newly-created composition popup gets
+	// its real size.  Repaint after that resize as well as in OpenTaskBar;
+	// otherwise the first UpdateLayeredWindow call can happen while the HWND is
+	// still 0x0 and the text remains absent until a mouse hover invalidates it.
+	if (TraySave.bMonitor && IsWindow(hTaskBar) && !bFullScreen)
+	{
+		ShowWindow(hTaskBar, SW_SHOWNOACTIVATE);
+		InvalidateRect(hTaskBar, NULL, TRUE);
+		UpdateWindow(hTaskBar);
 	}
 	if (TraySave.bSecond && IsWindow(hTime))
 	{
@@ -3528,6 +4131,7 @@ INT_PTR CALLBACK TaskTipsProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 			GetClientRect(hDlg, &rc);
 			if (pt.x < rc.right * 8 / 100)
 			{
+				ShowWindow(hDlg, SW_HIDE);
 				bSetting = TRUE;
 				SendMessage(hMain, WM_TRAYS, 0, 0);				
 			}
@@ -3625,8 +4229,9 @@ INT_PTR CALLBACK TaskTipsProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 			ReleaseSRWLockShared(&g_networkLock);
 			//		if (bErasebkgnd)
 			{
-				TraySave.TipsFont.lfHeight = DPI(TraySave.TipsFontSize);
-				HFONT hTipsFont = CreateFontIndirect(&TraySave.TipsFont); //创建字体
+				LOGFONT tipsFont = TraySave.TipsFont;
+				tipsFont.lfHeight = gTipsDrawFontHeight > 0 ? gTipsDrawFontHeight : DPI(TraySave.TipsFontSize);
+				HFONT hTipsFont = CreateFontIndirect(&tipsFont); //创建字体
 				HFONT oldFont = NULL;
 				if (hTipsFont)
 					oldFont = (HFONT)SelectObject(mdc, hTipsFont);
@@ -4544,7 +5149,17 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 	{
 	case WM_INITDIALOG:		
 		return (INT_PTR)TRUE;
+	case WM_NCDESTROY:
+		if (hTaskBar == hDlg)
+			hTaskBar = NULL;
+		EndArgbTextRender();
+		return FALSE;
 	case WM_COMMAND:
+		if (LOWORD(wParam) == kMenuSettingCommand)
+		{
+			OpenSetting();
+			return TRUE;
+		}
 		if (LOWORD(wParam) >= IDC_SELECT_ALL && LOWORD(wParam) <= IDC_SELECT_ALL + 99)
 		{
 			if (LOWORD(wParam) == IDC_SELECT_ALL)
@@ -4603,6 +5218,16 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		}
 		break;
 	case WM_MOUSEMOVE:
+		if (gMonitorCalibrating && (GetKeyState(VK_LBUTTON) & 0x8000))
+		{
+			POINT cursor{};
+			GetCursorPos(&cursor);
+			int dx = cursor.x - gMonitorDragStartRect.left;
+			int dy = cursor.y - gMonitorDragStartRect.top;
+			SetMonitorOffset(gMonitorDragStartOffsetX + dx, gMonitorDragStartOffsetY + dy);
+			AdjustWindowPos();
+			return TRUE;
+		}
 		if (bEvent == FALSE && (TraySave.bMonitorTips||TraySave.bMonitorPrice))
 		{
 			SetTrackMouseEvent(hTaskBar, TME_LEAVE | TME_HOVER);
@@ -4666,10 +5291,12 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			GetProcessCpuUsage();
 			HDC mdc = GetDC(hMain);
 			SIZE tSize = { 160, 16 };
+			gTipsDrawFontHeight = DPI(TraySave.TipsFontSize);
 			if (mdc)
 			{
-				TraySave.TipsFont.lfHeight = DPI(TraySave.TipsFontSize);
-				HFONT hTipsFont = CreateFontIndirect(&TraySave.TipsFont); //创建字体
+				LOGFONT tipsFont = TraySave.TipsFont;
+				tipsFont.lfHeight = gTipsDrawFontHeight;
+				HFONT hTipsFont = CreateFontIndirect(&tipsFont); //创建字体
 				HFONT oldFont = NULL;
 				if (hTipsFont)
 					oldFont = (HFONT)SelectObject(mdc, hTipsFont);
@@ -4690,15 +5317,55 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			if (trafficCount > kMaxTrafficEntries)
 				trafficCount = kMaxTrafficEntries;
 			SIZE_T tipHeight = (SIZE_T)wTipsHeight * (SIZE_T)(trafficCount + 14);
+			RECT wrc{}, src{};
+			if (!GetWindowRect(hDlg, &wrc) || !GetScreenRectSafe(hDlg, &src, TRUE))
+				return TRUE;
+			// A 150%/200% display scale can make the complete tips panel taller
+			// than the usable desktop.  Re-measure it with a temporary smaller font
+			// so all rows and the Settings/Exit buttons remain on-screen.
+			int workHeight = src.bottom - src.top;
+			int maxTipHeight = workHeight > 0 ? (workHeight * 85 / 100) : 0;
+			int rowCount = trafficCount + 14;
+			if (maxTipHeight > 0 && rowCount > 0 && tipHeight > (SIZE_T)maxTipHeight)
+			{
+				int scaledFontHeight = maxTipHeight / rowCount;
+				if (scaledFontHeight < 12)
+					scaledFontHeight = 12;
+				if (scaledFontHeight < gTipsDrawFontHeight)
+				{
+					gTipsDrawFontHeight = scaledFontHeight;
+					HDC measureDC = GetDC(hMain);
+					if (measureDC)
+					{
+						LOGFONT tipsFont = TraySave.TipsFont;
+						tipsFont.lfHeight = gTipsDrawFontHeight;
+						HFONT hTipsFont = CreateFontIndirect(&tipsFont);
+						HFONT oldFont = NULL;
+						if (hTipsFont)
+							oldFont = (HFONT)SelectObject(measureDC, hTipsFont);
+						if (!GetTextExtentPoint(measureDC, L"虚拟内存虚拟内存虚拟内存虚拟内存虚拟内存虚拟内存虚拟内存虚拟内存虚拟内存", 36, &tSize) ||
+							tSize.cx <= 0 || tSize.cy <= 0)
+							tSize = { 160, 16 };
+						if (oldFont && oldFont != (HFONT)HGDI_ERROR)
+							SelectObject(measureDC, oldFont);
+						if (hTipsFont)
+							DeleteObject(hTipsFont);
+						ReleaseDC(hMain, measureDC);
+					}
+					w = tSize.cx > 0 ? tSize.cx : 160;
+					wTipsHeight = tSize.cy > 0 ? tSize.cy : 16;
+					tipHeight = (SIZE_T)wTipsHeight * (SIZE_T)rowCount;
+				}
+			}
+			int workWidth = src.right - src.left;
+			if (workWidth > 0 && w > workWidth * 92 / 100)
+				w = workWidth * 92 / 100;
 			if (tipHeight == 0 || tipHeight > INT_MAX || w > INT_MAX)
 			{
 				ShowWindow(hTaskTips, SW_HIDE);
 				return TRUE;
 			}
 			h = (int)tipHeight;
-			RECT wrc{}, src{};
-			if (!GetWindowRect(hDlg, &wrc) || !GetScreenRectSafe(hDlg, &src, TRUE))
-				return TRUE;
 			if (wrc.bottom + h > src.bottom)
 				y = wrc.top - h;
 			else
@@ -4780,8 +5447,45 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		return TRUE;
 	}
 	break;
+	case WM_PAINT:
+	{
+		PAINTSTRUCT ps{};
+		HDC paintDC = BeginPaint(hDlg, &ps);
+		if (paintDC)
+		{
+			LONG paintCount = InterlockedIncrement(&gTaskBarPaintCount);
+			if (paintCount <= 12 || (paintCount % 60) == 0)
+				TraySRuntimeLogFormat(L"TaskBar WM_PAINT hwnd=%p count=%ld rect=%ld,%ld,%ld,%ld",
+					hDlg, paintCount, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right, ps.rcPaint.bottom);
+			// The renderer below historically lived in WM_ERASEBKGND.  Invoke it
+			// from the actual paint notification as well; layered popups otherwise
+			// can remain empty until Explorer sends a mouse-driven repaint.
+			SendMessage(hDlg, WM_ERASEBKGND, (WPARAM)paintDC, 0);
+			EndPaint(hDlg, &ps);
+		}
+		return TRUE;
+	}
+	case WM_CONTEXTMENU:
+		// Composition popups can deliver a context-menu message without a
+		// preceding WM_RBUTTONDOWN. Treat it as the settings gesture.
+		OpenSetting();
+		return TRUE;
 	case WM_LBUTTONDOWN:
 	{
+		if (!TraySave.bMonitorFloat && (GetKeyState(VK_CONTROL) & 0x8000))
+		{
+			// Ctrl+drag provides an immediate calibration mode for the anchored
+			// taskbar overlay.  The offset is stored in the two reserved config
+			// slots, so it survives Explorer restarts and DPI changes.
+			if (GetWindowRect(hDlg, &gMonitorDragStartRect))
+			{
+				gMonitorDragStartOffsetX = GetMonitorOffsetX();
+				gMonitorDragStartOffsetY = GetMonitorOffsetY();
+				gMonitorCalibrating = TRUE;
+				SetCapture(hDlg);
+			}
+			return TRUE;
+		}
 		if (TraySave.bMonitorFloat)
 		{
 			bTaskBarMoveing = TRUE;
@@ -4796,19 +5500,25 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 	}
 	break;
 	case WM_LBUTTONUP:
+		if (gMonitorCalibrating)
+		{
+			gMonitorCalibrating = FALSE;
+			if (GetCapture() == hDlg)
+				ReleaseCapture();
+			WriteReg();
+			return TRUE;
+		}
 		if (!TraySave.bMonitorFloat)
 		{
-/*
-			ShowWindow(hDlg, SW_HIDE);
-			Sleep(100);
-			POINT pt;
-			GetCursorPos(&pt);
-			mouse_event(MOUSEEVENTF_LEFTDOWN, pt.x, pt.y, 0, 0);
-			mouse_event(MOUSEEVENTF_LEFTUP, pt.x, pt.y, 0, 0);
-			SetTimer(hDlg, 9, 3000, NULL);
-			ShowWindow(hTaskTips,SW_HIDE);
+			// The monitor is an overlay, so a click must be handled here instead
+			// of being passed through to Explorer.  The old code had an empty
+			// non-floating branch, which made the visible monitor appear inert.
+			if (IsWindow(hTaskTips))
+				ShowWindow(hTaskTips, SW_HIDE);
+			if (IsWindow(hPrice))
+				ShowWindow(hPrice, SW_HIDE);
+			OpenSetting();
 			return TRUE;
-*/
 		}
 		break;
 	case WM_TIMER:
@@ -4853,7 +5563,10 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 					::InvalidateRect(hTime, NULL, TRUE);
 			}
 			if (IsWindow(hTaskBar))
+			{
 				::InvalidateRect(hTaskBar, NULL, TRUE);
+				UpdateWindow(hTaskBar);
+			}
 			if (TraySave.bMonitorPrice)
 			{
 				TrayData->iPriceUpDown[0] = 0;
@@ -4987,8 +5700,9 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 					if (!PtInRect(&brc, pt))
 						DestroyWindow(hPrice);
 				}
-			}
 		}
+		}
+		break;
 	case WM_ERASEBKGND:
 	{
 		//		PAINTSTRUCT ps;
@@ -5000,7 +5714,27 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		if (mdc)
 		{
 			RECT rc = initialRect;
-			HBITMAP hMemBmp = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
+			const int surfaceWidth = rc.right - rc.left;
+			const int surfaceHeight = rc.bottom - rc.top;
+			BOOL argbSurface = IsWin11ArgbTaskBar();
+			BYTE* argbBits = NULL;
+			HBITMAP hMemBmp = NULL;
+			if (argbSurface)
+			{
+				BITMAPINFO argbInfo{};
+				argbInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+				argbInfo.bmiHeader.biWidth = surfaceWidth;
+				argbInfo.bmiHeader.biHeight = -surfaceHeight;
+				argbInfo.bmiHeader.biPlanes = 1;
+				argbInfo.bmiHeader.biBitCount = 32;
+				argbInfo.bmiHeader.biCompression = BI_RGB;
+				hMemBmp = CreateDIBSection(hdc, &argbInfo, DIB_RGB_COLORS, (void**)&argbBits, NULL, 0);
+			}
+			if (!hMemBmp)
+			{
+				argbSurface = FALSE;
+				hMemBmp = CreateCompatibleBitmap(hdc, surfaceWidth, surfaceHeight);
+			}
 			if (!hMemBmp)
 			{
 				DeleteDC(mdc);
@@ -5013,10 +5747,36 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 				DeleteDC(mdc);
 				return TRUE;
 			}
+			if (argbSurface && argbBits)
+			{
+				DWORD imageSize = 0;
+				if (!ComputeDibImageSize(surfaceWidth, surfaceHeight, &imageSize))
+					argbSurface = FALSE;
+				else
+				{
+					ZeroMemory(argbBits, imageSize);
+					BeginArgbTextRender(argbBits, surfaceWidth, surfaceHeight, surfaceWidth * 4);
+					if (!g_argbTextSurface.active)
+						argbSurface = FALSE;
+				}
+			}
+			if (!argbSurface && IsWin11ArgbTaskBar())
+				ApplyTaskBarColorKey(RGB(0, 0, 1));
 			//		if (TraySave.cMonitorColor[0] != 0)
+			if (!argbSurface)
 			{
 				HBRUSH hb = NULL;
-				if (TraySave.cMonitorColor[0] != RGB(0, 0, 1)&& TraySave.cMonitorColor[0] != RGB(0, 0, 2))
+				// Win11 composition popups must ignore the saved legacy background
+				// color.  Paint the same reserved key used by the layered window so
+				// the monitor surface stays transparent across themes.
+				if (hWin11UI != NULL && !TraySave.bMonitorFloat)
+				{
+					const COLORREF transparentKey = RGB(0, 0, 1);
+					oPixelColor = transparentKey;
+					ApplyTaskBarColorKey(transparentKey);
+					hb = CreateSolidBrush(transparentKey);
+				}
+				else if (TraySave.cMonitorColor[0] != RGB(0, 0, 1)&& TraySave.cMonitorColor[0] != RGB(0, 0, 2))
 					hb = CreateSolidBrush(TraySave.cMonitorColor[0]);
 				else
 				{
@@ -5026,13 +5786,28 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 										hb=CreateSolidBrush(RGB(222,222,223));
 									else
 					*/
-					if ((rovi.dwBuildNumber > 25000||!TraySave.bTrayStyle)&&!TraySave.bMonitorFloat)
+					if (hWin11UI != NULL && !TraySave.bMonitorFloat)
+					{
+						// XAML/composition taskbars do not provide a stable GDI pixel
+						// to sample.  Sampling Explorer here can return black while the
+						// layered color key is still the old value, leaving an opaque
+						// rectangle behind the text.  Paint and key the same reserved
+						// color on every frame so DWM removes it consistently.
+						const COLORREF transparentKey = RGB(0, 0, 1);
+						if (oPixelColor != transparentKey)
+						{
+							oPixelColor = transparentKey;
+							ApplyTaskBarColorKey(transparentKey);
+						}
+						hb = CreateSolidBrush(transparentKey);
+					}
+					else if ((rovi.dwBuildNumber > 25000||!TraySave.bTrayStyle)&&!TraySave.bMonitorFloat)
 					{
 						COLORREF cPixel = GetWindowPixel(hTray);
 						if (cPixel != oPixelColor)
 						{
 							oPixelColor = cPixel;
-							SetLayeredWindowAttributes(hTaskBar, cPixel, 0, LWA_COLORKEY);
+							ApplyTaskBarColorKey(cPixel);
 						}
 						hb = CreateSolidBrush(oPixelColor);
 					}
@@ -5045,6 +5820,8 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 					DeleteObject(hb);
 				}
 			}
+			if (argbSurface)
+				SetBkMode(mdc, TRANSPARENT);
 			//		if (bErasebkgnd)
 			{
 //				InflateRect(&rc, -1, -1);
@@ -5252,12 +6029,28 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 						if (TraySave.iMonitorSimple == 0)
 						{
 							DrawShadowText(mdc, TraySave.szTemperatureGPU, lstrlen(TraySave.szTemperatureGPU), &crc, DT_LEFT | DT_VCENTER | DT_SINGLELINE, bColor, bShadow);
-							wsprintf(sz, L"%.2d%s", TrayData->iTemperature2, TraySave.szTemperatureGPUUnit);
+							// A zero GPU value means that the active driver exposed no
+							// temperature sensor.  Do not render it as 00℃, which looks
+							// like a real measurement; use an explicit unavailable marker.
+							if (TrayData->iTemperature2 == 0)
+								wsprintf(sz, L"--");
+							else
+								wsprintf(sz, L"%.2d%s", TrayData->iTemperature2, TraySave.szTemperatureGPUUnit);
 						}
 						else if (TraySave.iMonitorSimple == 1)
-							wsprintf(sz, L"%.2d℃", TrayData->iTemperature2);
+						{
+							if (TrayData->iTemperature2 == 0)
+								wsprintf(sz, L"--");
+							else
+								wsprintf(sz, L"%.2d℃", TrayData->iTemperature2);
+						}
 						else
-							wsprintf(sz, L"%.2d", TrayData->iTemperature2);
+						{
+							if (TrayData->iTemperature2 == 0)
+								wsprintf(sz, L"--");
+							else
+								wsprintf(sz, L"%.2d", TrayData->iTemperature2);
+						}
 					}
 					DrawShadowText(mdc, sz, lstrlen(sz), &crc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE, bColor, bShadow);
 
@@ -5543,15 +6336,62 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 						SetDIBits(mdc, hMemBmp, 0, rc.bottom - rc.top, lpvBits, &binfo, DIB_RGB_COLORS);
 					}
 				}
-				if (lpvBits)
-					HeapFree(GetProcessHeap(), 0, lpvBits);
+			if (lpvBits)
+				HeapFree(GetProcessHeap(), 0, lpvBits);
+		}
+		if (argbSurface)
+		{
+			RECT windowRect{};
+			GetWindowRect(hDlg, &windowRect);
+			POINT dstPoint{ windowRect.left, windowRect.top };
+			POINT srcPoint{ 0, 0 };
+			SIZE surfaceSize{ surfaceWidth, surfaceHeight };
+			BLENDFUNCTION blend{};
+			blend.BlendOp = AC_SRC_OVER;
+			blend.SourceConstantAlpha = 255;
+			blend.AlphaFormat = AC_SRC_ALPHA;
+			DWORD alphaPixels = 0;
+			DWORD colorPixels = 0;
+			DWORD imageSize = 0;
+			if (argbBits && ComputeDibImageSize(surfaceWidth, surfaceHeight, &imageSize))
+			{
+				for (DWORD offset = 0; offset + 3 < imageSize; offset += 4)
+				{
+					if (argbBits[offset + 3] != 0)
+						++alphaPixels;
+					if (argbBits[offset] != 0 || argbBits[offset + 1] != 0 || argbBits[offset + 2] != 0)
+						++colorPixels;
+				}
 			}
+			SetLastError(ERROR_SUCCESS);
+			BOOL updateResult = UpdateLayeredWindow(hDlg, NULL, &dstPoint, &surfaceSize, mdc, &srcPoint, 0, &blend, ULW_ALPHA);
+			DWORD updateError = updateResult ? ERROR_SUCCESS : GetLastError();
+			if (!updateResult && updateError == ERROR_INVALID_PARAMETER)
+			{
+				// A transient legacy-taskbar detection can call
+				// SetLayeredWindowAttributes on this HWND.  Windows then rejects
+				// UpdateLayeredWindow until the layered bit is reset.  Recover the
+				// surface in place and retry the same frame.
+				ResetTaskBarLayeredSurfaceForArgb(TRUE);
+				SetLastError(ERROR_SUCCESS);
+				updateResult = UpdateLayeredWindow(hDlg, NULL, &dstPoint, &surfaceSize, mdc, &srcPoint, 0, &blend, ULW_ALPHA);
+				updateError = updateResult ? ERROR_SUCCESS : GetLastError();
+			}
+			static LONG updateLogCount = 0;
+			LONG currentUpdateLog = InterlockedIncrement(&updateLogCount);
+			if (!updateResult || currentUpdateLog <= 12 || (currentUpdateLog % 60) == 0)
+				TraySRuntimeLogFormat(L"TaskBar ARGB hwnd=%p size=%dx%d alpha=%lu color=%lu update=%d err=%lu visible=%d",
+					hDlg, surfaceWidth, surfaceHeight, alphaPixels, colorPixels, updateResult, updateError,
+					IsWindowVisible(hDlg));
+			EndArgbTextRender();
+		}
+		else
 			BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, mdc, 0, 0, SRCCOPY);
-			if (oldBmp && oldBmp != (HBITMAP)HGDI_ERROR)
-				SelectObject(mdc, oldBmp);
-			DeleteObject(hMemBmp);
-			DeleteDC(mdc);
-			//		EndPaint(hDlg, &ps);
+		if (oldBmp && oldBmp != (HBITMAP)HGDI_ERROR)
+			SelectObject(mdc, oldBmp);
+		DeleteObject(hMemBmp);
+		DeleteDC(mdc);
+		//		EndPaint(hDlg, &ps);
 		}
 		return TRUE;
 	}
@@ -5651,6 +6491,7 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		}
 		break;
 	case WM_INITDIALOG:
+		TraySRuntimeLog(L"MainProc WM_INITDIALOG");
 		SetTimer(hDlg, 88, 8888,NULL);
 		return (INT_PTR)TRUE;
 		/*
@@ -5664,8 +6505,8 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 				break;
 		*/
 	case WM_TRAYS:
-		if(bSetting)
-			OpenSetting();
+		TraySRuntimeLog(L"WM_TRAYS received");
+		OpenSetting();
 		break;
 	case WM_APP_TRAYS_UPDATE:
 	{
@@ -5747,9 +6588,12 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		hSecondaryTray = FindWindow(szSecondaryTray, NULL);
 		while (hSecondaryTray)
 		{
-			HWND hSReBarWnd = FindWindowEx(hSecondaryTray, 0, L"WorkerW", NULL);
-			SendMessage(hSReBarWnd, WM_SETREDRAW, TRUE, 0);
-			ShowWindow(hSReBarWnd, SW_SHOWNOACTIVATE);
+			HWND hSReBarWnd = FindDescendantByClass(hSecondaryTray, L"WorkerW");
+			if (hSReBarWnd)
+			{
+				SendMessage(hSReBarWnd, WM_SETREDRAW, TRUE, 0);
+				ShowWindow(hSReBarWnd, SW_SHOWNOACTIVATE);
+			}
 			hSecondaryTray = FindWindowEx(NULL, hSecondaryTray, szSecondaryTray, NULL);
 		}
 		ShowWindow(hTaskListWnd, SW_SHOW);
@@ -5792,10 +6636,10 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 					hSecondaryTray = FindWindow(szSecondaryTray, NULL);
 					while (hSecondaryTray)
 					{
-						HWND hSReBarWnd = FindWindowEx(hSecondaryTray, 0, L"WorkerW", NULL);
+						HWND hSReBarWnd = FindDescendantByClass(hSecondaryTray, L"WorkerW");
 						if (hSReBarWnd)
 						{
-							HWND hSTaskListWnd = FindWindowEx(hSReBarWnd, NULL, L"MSTaskListWClass", NULL);
+							HWND hSTaskListWnd = FindDescendantByClass(hSReBarWnd, L"MSTaskListWClass");
 							if (hSTaskListWnd)
 							{
 								SetTaskBarPos(hSTaskListWnd, hSecondaryTray, hSReBarWnd, hSReBarWnd, FALSE);
@@ -5862,6 +6706,22 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 					hSecondaryTray = FindWindowEx(NULL, hSecondaryTray, szSecondaryTray, NULL);
 				}
 			}
+			if (TraySave.bMonitor && IsWin11ArgbTaskBar() && IsWindow(hTaskBar))
+			{
+				// Changing the Explorer taskbar's layered/composition style can
+				// promote Shell_TrayWnd above our popup.  Restore the monitor's
+				// topmost band after those shell style updates, not before them.
+				SetLastError(ERROR_SUCCESS);
+				BOOL zOrderResult = SetWindowPos(hTaskBar, HWND_TOPMOST, 0, 0, 0, 0,
+					SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+				static LONG topmostLogCount = 0;
+				LONG currentLogCount = InterlockedIncrement(&topmostLogCount);
+				if (!zOrderResult || currentLogCount <= 8 || (currentLogCount % 60) == 0)
+					TraySRuntimeLogFormat(L"TaskBar zorder final hwnd=%p ok=%d err=%lu ex=%08lx shell=%p aboveShell=%d",
+						hTaskBar, zOrderResult, zOrderResult ? 0 : GetLastError(),
+						(DWORD)GetWindowLongPtr(hTaskBar, GWL_EXSTYLE), hTray,
+						GetWindow(hTaskBar, GW_HWNDPREV) == hTray);
+			}
 			//			if (TraySave.aMode[0] == ACCENT_DISABLED && TraySave.aMode[1] == ACCENT_DISABLED)//默认则关闭定时器
 			//				KillTimer(hDlg, 3);
 		}
@@ -5869,12 +6729,35 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 	break;
 	case WM_IAWENTRAY://////////////////////////////////////////////////////////////////////////////////通知栏左右键处理
 	{
-		if (LOWORD(lParam) == WM_LBUTTONDOWN || LOWORD(lParam) == WM_RBUTTONDOWN)
+		UINT trayMessage = LOWORD(lParam);
+		// Handle the completed click/context gesture only.  Processing both
+		// button-down and button-up opened the modeless dialog twice on some
+		// Explorer revisions and could leave a hidden/stale HWND active.
+		if (trayMessage == WM_LBUTTONUP || trayMessage == WM_RBUTTONUP ||
+			trayMessage == WM_CONTEXTMENU || trayMessage == NIN_SELECT ||
+			trayMessage == NIN_KEYSELECT)
 		{
 			OpenSetting();
+			return TRUE;
 		}
 		break;
 	}
+	case WM_APP_TRAYS_THEME_CHANGED:
+		// Explorer/theme changes are delivered by the sampling worker, but all
+		// window destruction and recreation stays on the dialog's UI thread.
+		if (TraySave.bMonitor)
+		{
+			CloseTaskBar();
+			AdjustWindowPos();
+		}
+		return TRUE;
+	case WM_APP_TRAYS_MONITOR_REFRESH:
+		if (TraySave.bMonitor && IsWindow(hTaskBar))
+		{
+			InvalidateRect(hTaskBar, NULL, TRUE);
+			UpdateWindow(hTaskBar);
+		}
+		return TRUE;
 	break;
 	}
 	return FALSE;
@@ -5885,6 +6768,7 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 	switch (message)
 	{
 	case WM_INITDIALOG:
+		TraySRuntimeLog(L"SettingProc WM_INITDIALOG");
 		return (INT_PTR)TRUE;
 	case WM_NOTIFY:
 		if (lParam == 0)
@@ -5913,6 +6797,8 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 	{
 		HWND hSlider = GetDlgItem(hDlg, IDC_SLIDER_ALPHA);
 		HWND hSliderB = GetDlgItem(hDlg, IDC_SLIDER_ALPHA_B);
+		HWND hOffsetX = GetDlgItem(hDlg, IDC_SLIDER_OFFSET_X);
+		HWND hOffsetY = GetDlgItem(hDlg, IDC_SLIDER_OFFSET_Y);
 		if (hSlider == (HWND)lParam)
 		{
 			TraySave.bAlpha[iProject] = (int)SendDlgItemMessage(hDlg, IDC_SLIDER_ALPHA, TBM_GETPOS, 0, 0);
@@ -5922,6 +6808,14 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			DWORD bAlphaB = (int)SendDlgItemMessage(hDlg, IDC_SLIDER_ALPHA_B, TBM_GETPOS, 0, 0);
 			bAlphaB = bAlphaB << 24;
 			TraySave.dAlphaColor[iProject] = bAlphaB + (TraySave.dAlphaColor[iProject] & 0xffffff);
+		}
+		else if (hOffsetX == (HWND)lParam || hOffsetY == (HWND)lParam)
+		{
+			const int offsetX = (int)SendDlgItemMessage(hDlg, IDC_SLIDER_OFFSET_X, TBM_GETPOS, 0, 0);
+			const int offsetY = (int)SendDlgItemMessage(hDlg, IDC_SLIDER_OFFSET_Y, TBM_GETPOS, 0, 0);
+			SetMonitorOffset(offsetX, offsetY);
+			UpdateMonitorOffsetControls(hDlg);
+			AdjustWindowPos();
 		}
 		SetTimer(hDlg, 3, 500, NULL);
 		break;
@@ -5934,7 +6828,14 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		}
 		break;
 	case WM_COMMAND:
-		if (HIWORD(wParam) == EN_CHANGE && !bSettingInit)
+		if (LOWORD(wParam) == IDC_BUTTON_OFFSET_RESET && HIWORD(wParam) == BN_CLICKED)
+		{
+			SetMonitorOffset(0, 0);
+			UpdateMonitorOffsetControls(hDlg);
+			AdjustWindowPos();
+			WriteReg();
+		}
+		else if (HIWORD(wParam) == EN_CHANGE && !bSettingInit)
 		{
 			if (LOWORD(wParam) >= IDC_EDIT1 && LOWORD(wParam) <= IDC_EDIT12)
 			{
@@ -6243,14 +7144,11 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		}
 		else if (LOWORD(wParam) == IDCANCEL)
 		{
-			/*
-						SendMessage(hMain, WM_TIMER, 11, 1000);
-						DestroyWindow(hDlg);
-						return (INT_PTR)TRUE;
-			*/
-			//			SendMessage(hReBarWnd, WM_SETREDRAW, TRUE, 0);
-			bRealClose = TRUE;
-			SendMessage(hMain, WM_CLOSE, NULL, NULL);
+			// "返回" closes only the modeless settings surface.  Sending
+			// WM_CLOSE to the hidden main window here terminates the whole tray
+			// process, and also leaves a stale hSetting path for the next click.
+			ShowWindow(hDlg, SW_HIDE);
+			bSetting = FALSE;
 			return (INT_PTR)TRUE;
 		}
 		else if (LOWORD(wParam) == IDC_CLOSE)
@@ -6402,6 +7300,15 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			//			SendMessage(hMain, WM_TRAYS, NULL, NULL);
 		}
 		break;
+	case WM_CLOSE:
+		ShowWindow(hDlg, SW_HIDE);
+		bSetting = FALSE;
+		return (INT_PTR)TRUE;
+	case WM_DESTROY:
+		if (hSetting == hDlg)
+			hSetting = NULL;
+		bSetting = FALSE;
+		return (INT_PTR)TRUE;
 	}
 	return (INT_PTR)FALSE;
 }
@@ -6753,6 +7660,20 @@ void ShowSelectMenu(BOOL bNet)
 	GetCursorPos(&point);
 	SetTimer(hTaskBar, 5, 1200, NULL);
 	if (subMenu)
-		TrackPopupMenu(subMenu, TPM_LEFTALIGN, point.x, point.y, NULL, hTaskBar, NULL);
+	{
+		InsertMenu(subMenu, 0, MF_BYPOSITION | MF_STRING, kMenuSettingCommand, L"设置");
+		InsertMenu(subMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
+		SetForegroundWindow(hTaskBar);
+		// A Win11 composition overlay is a top-level layered popup.  Explorer
+		// does not always route TrackPopupMenu's WM_COMMAND back to that
+		// dialog, so request the selected command directly and dispatch it
+		// ourselves.
+		UINT command = TrackPopupMenu(
+			subMenu, TPM_LEFTALIGN | TPM_RETURNCMD, point.x, point.y, 0, hTaskBar, NULL);
+		if (command == kMenuSettingCommand)
+			OpenSetting();
+		else if (command != 0 && IsWindow(hTaskBar))
+			SendMessage(hTaskBar, WM_COMMAND, command, 0);
+	}
 	DestroyMenu(hMenu);
 }

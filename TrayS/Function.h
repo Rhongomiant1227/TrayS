@@ -117,6 +117,7 @@ BOOL		pShell_NotifyIcon(DWORD dwMessage, _In_ PNOTIFYICONDATAW lpData);
 #if defined(TRAYS_ENABLE_LEGACY_SERVICE) && TRAYS_ENABLE_LEGACY_SERVICE
 BOOL		pWTSQueryUserToken(ULONG SessionId, PHANDLE phToken);
 BOOL		pCreateEnvironmentBlock(_At_((PZZWSTR*)lpEnvironment, _Outptr_)LPVOID* lpEnvironment, _In_opt_ HANDLE  hToken, _In_ BOOL bInherit);
+BOOL		pDestroyEnvironmentBlock(LPVOID lpEnvironment);
 #endif
 int			DrawShadowText(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat, COLORREF bColor, BOOL bYes);//绘制阴影文字
 DWORD		GetSystemUsesLightTheme();//获取系统主题颜色模式
@@ -126,6 +127,7 @@ UINT_PTR	pSHAppBarMessage(DWORD dwMessage,PAPPBARDATA pData);
 
 BOOL GetOKXPrice(LPTSTR szName, LPTSTR szWeb, float* fOutLast, float* fOutOpen, WCHAR* szOutLast, WCHAR* szOutOpen);
 BOOL GetSinaPrice(LPTSTR szName, float* fOutLast, float* fOutOpen, WCHAR* szOutLast, WCHAR* szOutOpen);
+void UnloadWinHttp();
 
 char* xstrstr(const char* str, const char* sub);
 float xatof(const char* s);

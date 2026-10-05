@@ -28,18 +28,28 @@
 
 ## 构建与静态检查
 
-Build Tools 保存在仓库目录 `F:\trayS\.buildtools`，用户要求在明确说“卸载”之前保留它。默认构建和打包：
+Build Tools 保存在仓库目录 `.buildtools`，用户要求在明确说“卸载”之前保留它。默认构建和打包：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate-compatibility.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -Platform x64 -Configuration Release -PackageName TrayS_1.5.0_x64 -Force
 ```
 
-生成物应位于 `F:\trayS\dist\`。安全默认包只放 `TrayS.exe`、`COMPATIBILITY.md`、`PACKAGE.txt` 和 `SHA256SUMS.txt`，不得包含 `.buildtools`、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 或 LHM DLL。需要隔离测试 LHM 时才显式使用 `-IncludeLhm`，该包不应作为默认 Release。
+当前机器没有 MSBuild 时，使用项目内 LLVM-MinGW 生成原生 Win32 兼容性验证 EXE：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-portable-compat-exe.ps1 -Force
+```
+
+它输出 `dist\TrayS-compat-win11-x64\TrayS-compat-win11-x64.exe` 和对应的 `dist\TrayS-compat-win11-x64.zip`，中间文件放在 `.build-native\`，并静态链接 LLVM C++ 运行库，因而可以脱离 `.buildtools` 目录直接启动。该构建不包含 C++/CLI 的 LibreHardwareMonitor 包装层；完整安全 Release 仍按上面的 `package-release.ps1` 使用 MSVC/C++/CLI 工具链生成。
+
+生成物应位于仓库内的 `dist\`。安全默认包只放 `TrayS.exe`、`COMPATIBILITY.md`、`PACKAGE.txt` 和 `SHA256SUMS.txt`，不得包含 `.buildtools`、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 或 LHM DLL。需要隔离测试 LHM 时才显式使用 `-IncludeLhm`，该包不应作为默认 Release。
+
+兼容性 Release 同时附带 `MEMORY_AUDIT.md`，记录动态模块、句柄、GDI/USER 对象和运行压力检查的边界。
 
 Release 资产名称必须包含产品名和架构，例如 `TrayS_1.5.0_x64.zip`、`TrayS_1.5.0_x86.zip`；不要恢复旧的 `_x64_ALL_...` 匿名命名。
 
-当前基线已经在本机完成 `Release|x64` 和 `Release|Win32` 构建，链接结果为 0 个警告、0 个错误；静态检查也已通过。MSBuild 日志中的 `System.Core, Version=3.5.0.0` C++/CLI 加载提示不影响最终产物。真实硬件温度采样尚未执行，后续 agent 必须在隔离环境中验证 AMD、Intel、混合 AMD/NVIDIA 和多显卡场景，不能通过启动当前 TrayS 来替代验证。
+历史维护记录显示，Release|x64 和 Release|Win32 曾在带有 VS 2022 Build Tools 的环境中完成构建，链接结果为 0 个警告、0 个错误；静态检查也已通过。本工作目录未安装 MSBuild，但已使用便携式 LLVM-MinGW 生成并实际运行 `dist\TrayS-compat-win11-x64\TrayS-compat-win11-x64.exe`。在 Windows 11 build 22631 上，窗口枚举确认监控窗口挂在 `Shell_TrayWnd` 任务栏树中；临时开启温度配置后，运行进程共享数据的 CPU 温度为 28°C。真实硬件回归仍需在隔离环境中验证 AMD、Intel、混合 AMD/NVIDIA 和多显卡场景，不能把这台机器的结果扩展成所有硬件的认证。
 
 构建后至少运行：
 
@@ -48,7 +58,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate-compatibili
 git diff --check
 ```
 
-如果 VS/MSBuild 不可用，记录为“未完成编译验证”，不要用启动程序来替代静态检查，也不要为了测试而加载驱动。
+如果 VS/MSBuild 不可用，保持 C++/CLI Release 的限制说明，并使用 `build-portable-compat-exe.ps1` 验证原生 Win32 路径；不要为了测试而加载驱动。
 
 ## 未来机型适配清单
 
