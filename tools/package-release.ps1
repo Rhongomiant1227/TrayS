@@ -29,10 +29,20 @@ if ([string]::IsNullOrWhiteSpace($PackageName)) {
     $PackageName = "TrayS_1.6.0_${platformLabel}"
 }
 
+if ($PackageName -eq '.' -or $PackageName -eq '..' -or
+    $PackageName.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+    throw 'PackageName must be a single directory name, not a path.'
+}
+$distRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'dist')).TrimEnd('\') + '\'
 $solutionPath = Join-Path $repoRoot 'TrayS.sln'
 $buildOutput = Join-Path $repoRoot ("Bin\{0}\{1}" -f $Platform, $Configuration)
-$packageRoot = Join-Path $repoRoot ("dist\{0}" -f $PackageName)
-$archivePath = Join-Path $repoRoot ("dist\{0}.zip" -f $PackageName)
+$packageRoot = [IO.Path]::GetFullPath((Join-Path $distRoot $PackageName))
+$archivePath = [IO.Path]::GetFullPath((Join-Path $distRoot "$PackageName.zip"))
+foreach ($path in @($packageRoot, $archivePath)) {
+    if (-not $path.StartsWith($distRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Package output must stay inside dist: $path"
+    }
+}
 $machine = if ($Platform -eq 'x64') { 'x64' } else { 'x86' }
 # The solution exposes the 32-bit configuration as x86, while the individual
 # Visual C++ projects retain their historical Win32 platform name.
@@ -50,22 +60,30 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Compatibility validation failed; package was not created.'
 }
 
-$msbuild = Get-Command msbuild.exe -ErrorAction SilentlyContinue
-if ($null -eq $msbuild) {
-    $candidatePaths = @(
-        (Join-Path $repoRoot '.buildtools\MSBuild\Current\Bin\MSBuild.exe'),
-        'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
-        'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe',
-        'C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe',
-        'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
-        'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe',
-        'C:\Program Files (x86)\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe'
-    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if ($candidatePaths) {
-        $msbuildPath = $candidatePaths
-    }
+$msbuildPath = $null
+$localMsbuildPath = Join-Path $repoRoot '.buildtools\MSBuild\Current\Bin\MSBuild.exe'
+if (Test-Path -LiteralPath $localMsbuildPath -PathType Leaf) {
+    # Prefer the repository-local copy even when another MSBuild is on PATH.
+    # This keeps the build reproducible and makes the tool removable with the
+    # project directory.
+    $msbuildPath = $localMsbuildPath
 } else {
-    $msbuildPath = $msbuild.Source
+    $msbuild = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($msbuild) {
+        $msbuildPath = $msbuild.Source
+    } else {
+        $candidatePaths = @(
+            'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+            'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe',
+            'C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe',
+            'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+            'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe',
+            'C:\Program Files (x86)\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe'
+        ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if ($candidatePaths) {
+            $msbuildPath = $candidatePaths
+        }
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($msbuildPath)) {
@@ -79,6 +97,51 @@ Then run this script again from the repository root.
 '@
 }
 
+# A copied MSBuild executable does not inherit the Visual C++ environment that
+# the Developer Command Prompt normally supplies. Import vcvarsall so the
+# local xcopy MSBuild and a machine-wide MSBuild use the same toolset paths.
+$vcVarsCandidates = @(
+    (Join-Path $repoRoot '.buildtools\VC\Auxiliary\Build\vcvarsall.bat'),
+    'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat',
+    'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat',
+    'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat',
+    'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat',
+    'C:\Program Files (x86)\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat',
+    'C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat'
+)
+$vcBuildProperties = @()
+$vcVarsPath = $vcVarsCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if ($vcVarsPath) {
+    $vcArchitecture = if ($Platform -eq 'x64') { 'x64' } else { 'x86' }
+    $environmentLines = cmd.exe /d /s /c ('call "{0}" {1} >nul && set' -f $vcVarsPath, $vcArchitecture)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to initialize the Visual C++ environment: $vcVarsPath"
+    }
+    foreach ($line in $environmentLines) {
+        if ($line -match '^(?<name>[^=]+)=(?<value>.*)$') {
+            [Environment]::SetEnvironmentVariable($Matches.name, $Matches.value, 'Process')
+        }
+    }
+    # vcvarsall.bat is under <VS>\VC\Auxiliary\Build; walk back to the
+    # installation root before locating its MSBuild VC targets.
+    $visualStudioRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $vcVarsPath)))
+    $vcTargetsPath = Join-Path $visualStudioRoot 'MSBuild\Microsoft\VC\v170'
+    if (Test-Path -LiteralPath (Join-Path $vcTargetsPath 'Microsoft.Cpp.Default.props')) {
+        $vcBuildProperties += "/p:VCTargetsPath=$($vcTargetsPath.Replace('\', '/'))/"
+    }
+    if ($env:VCToolsInstallDir) {
+        $vcToolsPath = $env:VCToolsInstallDir.TrimEnd('\').Replace('\', '/')
+        $vcBuildProperties += "/p:VCToolsInstallDir=$vcToolsPath/"
+        $vcBuildProperties += "/p:VCToolsPath=$vcToolsPath"
+    }
+    if ($env:WindowsSdkDir) {
+        $vcBuildProperties += "/p:WindowsSdkDir=$($env:WindowsSdkDir.TrimEnd('\').Replace('\', '/'))/"
+    }
+    if ($env:WindowsSDKVersion) {
+        $vcBuildProperties += "/p:WindowsSDKVersion=$($env:WindowsSDKVersion.TrimEnd('\'))"
+    }
+}
+
 # C++/CLI projects link against MSCOREE.lib. Some lightweight Build Tools
 # installations do not include the .NET Framework SDK import library, even
 # though the Windows runtime provides mscoree.dll. Generate a local import
@@ -87,9 +150,29 @@ $mscoreeDef = Join-Path $repoRoot 'tools\mscoree.def'
 $mscoreeLib = Join-Path $repoRoot ("tools\mscoree-{0}.lib" -f $machine)
 $projectMscoreeLib = Join-Path $repoRoot 'OpenHardwareMonitorApi\mscoree.lib'
 if (-not (Test-Path -LiteralPath $mscoreeLib -PathType Leaf)) {
-    $libCandidates = Get-ChildItem -LiteralPath (Join-Path $repoRoot '.buildtools\VC\Tools\MSVC') -Recurse -Filter lib.exe -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match ("\\bin\\Host(?:x64|x86)\\{0}\\lib\.exe$" -f $machine) } |
-        Select-Object -First 1 -ExpandProperty FullName
+    $libCandidates = @()
+    $libCommand = Get-Command lib.exe -ErrorAction SilentlyContinue
+    if ($libCommand) {
+        $libCandidates += $libCommand.Source
+    }
+    $toolRoots = @(
+        (Join-Path $repoRoot '.buildtools\VC\Tools\MSVC'),
+        'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC',
+        'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC',
+        'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC',
+        'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC'
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+    foreach ($toolRoot in $toolRoots) {
+        foreach ($toolVersion in (Get-ChildItem -LiteralPath $toolRoot -Directory -ErrorAction SilentlyContinue)) {
+            foreach ($hostArchitecture in @('Hostx64', 'Hostx86')) {
+                $candidate = Join-Path $toolVersion.FullName ("bin\{0}\{1}\lib.exe" -f $hostArchitecture, $machine)
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    $libCandidates += $candidate
+                }
+            }
+        }
+    }
+    $libCandidates = $libCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
     if ([string]::IsNullOrWhiteSpace($libCandidates) -or -not (Test-Path -LiteralPath $mscoreeDef -PathType Leaf)) {
         throw 'MSCOREE import library is missing and lib.exe/mscoree.def could not be found.'
     }
@@ -104,6 +187,7 @@ Write-Host ("Building {0}|{1} with {2}" -f $Configuration, $Platform, $msbuildPa
 $buildArguments = @(
     $solutionPath,
     '/m',
+    '/nr:false',
     '/t:Build',
     "/p:Configuration=$Configuration",
     "/p:Platform=$solutionPlatform",
@@ -111,13 +195,20 @@ $buildArguments = @(
     '/p:BuildProjectReferences=true',
     '/nologo'
 )
+$buildArguments += $vcBuildProperties
 
 # The repository can build without a machine-wide .NET Framework Developer
 # Pack by using the pinned NuGet reference assemblies kept under tools/.
-$referenceRoot = Join-Path $repoRoot 'tools\reference-assemblies\build\.NETFramework\v4.7.2'
-if (Test-Path -LiteralPath (Join-Path $referenceRoot 'mscorlib.dll')) {
+$referenceCandidates = @(
+    (Join-Path $repoRoot 'tools\reference-assemblies\build\.NETFramework\v4.7.2'),
+    (Join-Path $repoRoot '.buildtools\net472-reference\build\.NETFramework\v4.7.2')
+)
+$referenceRoot = $referenceCandidates | Where-Object {
+    Test-Path -LiteralPath (Join-Path $_ 'mscorlib.dll') -PathType Leaf
+} | Select-Object -First 1
+if ($referenceRoot -and (Test-Path -LiteralPath (Join-Path $referenceRoot 'mscorlib.dll'))) {
     $buildArguments += "/p:FrameworkPathOverride=$referenceRoot"
-    $buildArguments += "/p:TargetFrameworkRootPath=$(Split-Path -Parent $referenceRoot)\"
+    $buildArguments += "/p:TargetFrameworkRootPath=$((Split-Path -Parent $referenceRoot).TrimEnd('\'))"
 }
 
 # Use the newest Windows 10 SDK already installed on the machine. The project

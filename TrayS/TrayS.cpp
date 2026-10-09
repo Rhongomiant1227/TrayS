@@ -130,10 +130,11 @@ HDC hDesktopDC=NULL;
 // This temporary height keeps the panel usable without changing the saved
 // preference or the main taskbar monitor font.
 static int gTipsDrawFontHeight = 0;
-static RECT gMonitorDragStartRect = {};
+static POINT gMonitorDragStartCursor = {};
 static BOOL gMonitorCalibrating = FALSE;
 static int gMonitorDragStartOffsetX = 0;
 static int gMonitorDragStartOffsetY = 0;
+static const int kMonitorOffsetLimit = 4096;
 static const UINT kMenuSettingCommand = 32801;
 static const UINT WM_APP_TRAYS_MONITOR_REFRESH = WM_APP + 0x41;
 static const UINT WM_APP_TRAYS_THEME_CHANGED = WM_APP + 0x42;
@@ -219,6 +220,7 @@ struct ArgbTextSurfaceState
 	int stride = 0;
 	HDC maskDC = NULL;
 	HBITMAP maskBitmap = NULL;
+	HBITMAP maskOldBitmap = NULL;
 	BYTE* maskBits = NULL;
 	int maskStride = 0;
 	BOOL active = FALSE;
@@ -228,6 +230,9 @@ static ArgbTextSurfaceState g_argbTextSurface;
 static void EndArgbTextRender()
 {
 	g_argbTextSurface.active = FALSE;
+	// A GDI bitmap must be deselected before it can be deleted reliably.
+	if (g_argbTextSurface.maskDC && g_argbTextSurface.maskOldBitmap)
+		SelectObject(g_argbTextSurface.maskDC, g_argbTextSurface.maskOldBitmap);
 	if (g_argbTextSurface.maskBitmap)
 		DeleteObject(g_argbTextSurface.maskBitmap);
 	if (g_argbTextSurface.maskDC)
@@ -259,7 +264,8 @@ static void BeginArgbTextRender(BYTE* bits, int width, int height, int stride)
 		DeleteDC(maskDC);
 		return;
 	}
-	if (!SelectObject(maskDC, maskBitmap))
+	HBITMAP maskOldBitmap = (HBITMAP)SelectObject(maskDC, maskBitmap);
+	if (!maskOldBitmap || maskOldBitmap == (HBITMAP)HGDI_ERROR)
 	{
 		DeleteObject(maskBitmap);
 		DeleteDC(maskDC);
@@ -271,6 +277,7 @@ static void BeginArgbTextRender(BYTE* bits, int width, int height, int stride)
 	g_argbTextSurface.stride = stride;
 	g_argbTextSurface.maskDC = maskDC;
 	g_argbTextSurface.maskBitmap = maskBitmap;
+	g_argbTextSurface.maskOldBitmap = maskOldBitmap;
 	g_argbTextSurface.maskBits = maskBits;
 	g_argbTextSurface.maskStride = width * 4;
 	g_argbTextSurface.active = TRUE;
@@ -373,10 +380,10 @@ static int GetMonitorOffsetY()
 
 static void SetMonitorOffset(int x, int y)
 {
-	if (x < -4096) x = -4096;
-	if (x > 4096) x = 4096;
-	if (y < -4096) y = -4096;
-	if (y > 4096) y = 4096;
+	if (x < -kMonitorOffsetLimit) x = -kMonitorOffsetLimit;
+	if (x > kMonitorOffsetLimit) x = kMonitorOffsetLimit;
+	if (y < -kMonitorOffsetLimit) y = -kMonitorOffsetLimit;
+	if (y > kMonitorOffsetLimit) y = kMonitorOffsetLimit;
 	TraySave.dNumValues2[3] = (DWORD)(LONG)x;
 	TraySave.dNumValues2[4] = (DWORD)(LONG)y;
 }
@@ -1319,8 +1326,11 @@ static void NormalizeTraySave()
 	TraySave.szOKXWeb[ARRAYSIZE(TraySave.szOKXWeb) - 1] = L'\0';
 	TraySave.TraybarFont.lfFaceName[ARRAYSIZE(TraySave.TraybarFont.lfFaceName) - 1] = L'\0';
 	TraySave.TipsFont.lfFaceName[ARRAYSIZE(TraySave.TipsFont.lfFaceName) - 1] = L'\0';
-	if (TraySave.iUnit < 0 || TraySave.iUnit > 2)
-		TraySave.iUnit = 2;
+	// The low word is the display unit; the high word selects bits/bytes.
+	// Validate them independently so saving another setting preserves both.
+	const WORD trafficUnit = LOWORD(TraySave.iUnit);
+	const WORD trafficBits = HIWORD(TraySave.iUnit);
+	TraySave.iUnit = MAKELONG(trafficUnit <= 2 ? trafficUnit : 2, trafficBits <= 1 ? trafficBits : 0);
 	if (TraySave.TraybarFontSize < -256 || TraySave.TraybarFontSize > 256 || TraySave.TraybarFontSize == 0)
 		TraySave.TraybarFontSize = -14;
 	if (TraySave.TipsFontSize < -256 || TraySave.TipsFontSize > 256 || TraySave.TipsFontSize == 0)
@@ -1337,9 +1347,9 @@ static void NormalizeTraySave()
 	// hold the optional horizontal/vertical taskbar calibration offsets.
 	LONG monitorOffsetX = (LONG)TraySave.dNumValues2[3];
 	LONG monitorOffsetY = (LONG)TraySave.dNumValues2[4];
-	if (monitorOffsetX < -4096 || monitorOffsetX > 4096)
+	if (monitorOffsetX < -kMonitorOffsetLimit || monitorOffsetX > kMonitorOffsetLimit)
 		TraySave.dNumValues2[3] = 0;
-	if (monitorOffsetY < -4096 || monitorOffsetY > 4096)
+	if (monitorOffsetY < -kMonitorOffsetLimit || monitorOffsetY > kMonitorOffsetLimit)
 		TraySave.dNumValues2[4] = 0;
 }
 
@@ -1394,6 +1404,19 @@ void WriteReg()//写入设置
 		CloseHandle(hFile);
 	}
 }
+static void FinishMonitorCalibration(HWND hWnd)
+{
+	if (!gMonitorCalibrating)
+		return;
+	// ReleaseCapture synchronously sends WM_CAPTURECHANGED. Clear the flag
+	// first so that message cannot save the same drag recursively.
+	gMonitorCalibrating = FALSE;
+	if (GetCapture() == hWnd)
+		ReleaseCapture();
+	UpdateMonitorOffsetControls(hSetting);
+	WriteReg();
+}
+
 void GetShellAllWnd()
 {
 	hTray = NULL;
@@ -1971,8 +1994,8 @@ void OpenSetting()
 	SendDlgItemMessage(hSetting, IDC_SLIDER_ALPHA_B, TBM_SETRANGE, 0, MAKELPARAM(0, 255));
 	BYTE bAlphaB = TraySave.dAlphaColor[iProject] >> 24;
 	SendDlgItemMessage(hSetting, IDC_SLIDER_ALPHA_B, TBM_SETPOS, TRUE, bAlphaB);
-	SendDlgItemMessage(hSetting, IDC_SLIDER_OFFSET_X, TBM_SETRANGE, TRUE, MAKELPARAM(-300, 300));
-	SendDlgItemMessage(hSetting, IDC_SLIDER_OFFSET_Y, TBM_SETRANGE, TRUE, MAKELPARAM(-300, 300));
+	SendDlgItemMessage(hSetting, IDC_SLIDER_OFFSET_X, TBM_SETRANGE, TRUE, MAKELPARAM(-kMonitorOffsetLimit, kMonitorOffsetLimit));
+	SendDlgItemMessage(hSetting, IDC_SLIDER_OFFSET_Y, TBM_SETRANGE, TRUE, MAKELPARAM(-kMonitorOffsetLimit, kMonitorOffsetLimit));
 	UpdateMonitorOffsetControls(hSetting);
 	SendDlgItemMessage(hSetting, IDC_CHECK_AUTORUN, BM_SETCHECK,
 		IsUserAutoRunEnabledSafe(szAppName), NULL);
@@ -3768,6 +3791,8 @@ void AdjustWindowPos()//设置信息窗口位置大小
 					}
 				}
 			}
+			if (!bFullScreen && hWin11UI == NULL)
+				nleft -= trayrc.left;
 			nleft += GetMonitorOffsetX();
 			int h = wHeight * 2;
 			int ntop;
@@ -3854,16 +3879,16 @@ void AdjustWindowPos()//设置信息窗口位置大小
 				ntop = taskrc.top+2;
 			else
 				ntop = taskrc.bottom - mHeight;
-			int nleft = (hWin11UI != NULL && !bFullScreen) ? trayrc.left + 1 : 1;
+			if (!bFullScreen && hWin11UI == NULL)
+				ntop -= trayrc.top;
+			int nleft = (hWin11UI != NULL || bFullScreen) ? trayrc.left + 1 : 1;
 			nleft += GetMonitorOffsetX();
 			ntop += GetMonitorOffsetY();
 			int w = trayrc.right - trayrc.left - 2;
 			if (w <= 0)
 				w = 1;
 			int verticalHeight = mHeight > 0 ? mHeight : 1;
-			if (bFullScreen)
-				nleft = trayrc.left + 1;
-			if (ntop != ottop || otleft != w)
+			if (ntop != ottop || otleft != nleft)
 			{
 				/*
 							HDC hdc = GetDC(hTaskBar);
@@ -3875,7 +3900,7 @@ void AdjustWindowPos()//设置信息窗口位置大小
 							ReleaseDC(hTaskBar, hdc);
 				*/
 				ottop = ntop;
-				otleft = w;
+				otleft = nleft;
 				if (bFullScreen)
 					SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, w, verticalHeight, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
 				else
@@ -5221,11 +5246,13 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		if (gMonitorCalibrating && (GetKeyState(VK_LBUTTON) & 0x8000))
 		{
 			POINT cursor{};
-			GetCursorPos(&cursor);
-			int dx = cursor.x - gMonitorDragStartRect.left;
-			int dy = cursor.y - gMonitorDragStartRect.top;
-			SetMonitorOffset(gMonitorDragStartOffsetX + dx, gMonitorDragStartOffsetY + dy);
-			AdjustWindowPos();
+			if (GetCursorPos(&cursor))
+			{
+				int dx = cursor.x - gMonitorDragStartCursor.x;
+				int dy = cursor.y - gMonitorDragStartCursor.y;
+				SetMonitorOffset(gMonitorDragStartOffsetX + dx, gMonitorDragStartOffsetY + dy);
+				AdjustWindowPos();
+			}
 			return TRUE;
 		}
 		if (bEvent == FALSE && (TraySave.bMonitorTips||TraySave.bMonitorPrice))
@@ -5477,7 +5504,7 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			// Ctrl+drag provides an immediate calibration mode for the anchored
 			// taskbar overlay.  The offset is stored in the two reserved config
 			// slots, so it survives Explorer restarts and DPI changes.
-			if (GetWindowRect(hDlg, &gMonitorDragStartRect))
+			if (GetCursorPos(&gMonitorDragStartCursor))
 			{
 				gMonitorDragStartOffsetX = GetMonitorOffsetX();
 				gMonitorDragStartOffsetY = GetMonitorOffsetY();
@@ -5502,10 +5529,7 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 	case WM_LBUTTONUP:
 		if (gMonitorCalibrating)
 		{
-			gMonitorCalibrating = FALSE;
-			if (GetCapture() == hDlg)
-				ReleaseCapture();
-			WriteReg();
+			FinishMonitorCalibration(hDlg);
 			return TRUE;
 		}
 		if (!TraySave.bMonitorFloat)
@@ -5520,6 +5544,11 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			OpenSetting();
 			return TRUE;
 		}
+		break;
+	case WM_CANCELMODE:
+	case WM_CAPTURECHANGED:
+	case WM_DESTROY:
+		FinishMonitorCalibration(hDlg);
 		break;
 	case WM_TIMER:
 		if (wParam == 11)
@@ -6811,8 +6840,10 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		}
 		else if (hOffsetX == (HWND)lParam || hOffsetY == (HWND)lParam)
 		{
-			const int offsetX = (int)SendDlgItemMessage(hDlg, IDC_SLIDER_OFFSET_X, TBM_GETPOS, 0, 0);
-			const int offsetY = (int)SendDlgItemMessage(hDlg, IDC_SLIDER_OFFSET_Y, TBM_GETPOS, 0, 0);
+			const int offsetX = hOffsetX == (HWND)lParam ?
+				(int)SendDlgItemMessage(hDlg, IDC_SLIDER_OFFSET_X, TBM_GETPOS, 0, 0) : GetMonitorOffsetX();
+			const int offsetY = hOffsetY == (HWND)lParam ?
+				(int)SendDlgItemMessage(hDlg, IDC_SLIDER_OFFSET_Y, TBM_GETPOS, 0, 0) : GetMonitorOffsetY();
 			SetMonitorOffset(offsetX, offsetY);
 			UpdateMonitorOffsetControls(hDlg);
 			AdjustWindowPos();

@@ -32,6 +32,9 @@ foreach ($project in @('OpenHardwareMonitorApi/OpenHardwareMonitorApi.vcxproj', 
         Assert-Condition ($compileGroups.Count -eq 4) "Expected four build configurations in $project"
         foreach ($group in $compileGroups) {
             Assert-Condition ($group.ClCompile.AdditionalOptions -match '(?i)(^|\s)/utf-8(?:\s|$)') "MSVC UTF-8 source mode is missing in $project"
+            if ($project -eq 'TrayS/TrayS.vcxproj') {
+                Assert-Condition ($group.Link.AdditionalDependencies -match '(?i)(^|;)comctl32\.lib(;|$)') "Common controls library is missing in $project $($group.Condition)"
+            }
         }
 
         $projectDirectory = Split-Path -Parent $projectPath
@@ -97,6 +100,8 @@ if (Test-Path -LiteralPath $assemblyPath) {
             }
         }
     }
+    $hardwareType = $assembly.GetType('LibreHardwareMonitor.Hardware.HardwareType', $false)
+    Assert-Condition ($null -ne $hardwareType -and [Enum]::GetNames($hardwareType) -contains 'GpuIntel') 'LibreHardwareMonitorLib has no Intel GPU type'
 }
 
 $hidSharpPath = Join-Path $repoRoot 'OpenHardwareMonitorApi/HidSharp.dll'
@@ -132,6 +137,7 @@ Assert-Condition ($apiHeader -match 'static_cast<size_t>\(iHDD\)\s*<\s*temperatu
 Assert-Condition ($apiHeader -match 'try\s*\{[\s\S]*m_pMonitor->GetHardwareInfo\(\)') 'GetTemperature does not contain the managed update boundary'
 Assert-Condition ($apiHeader -match 'catch\s*\(\.\.\.\)') 'GetTemperature does not contain a C ABI catch-all'
 Assert-Condition ($monitorImplementation -match 'static bool TryGetLoadValue') 'Load sensor values are not validated independently'
+Assert-Condition ($monitorImplementation -match 'case HardwareType::GpuIntel:' -and $monitorImplementation -match 'return m_gpu_intel_temperature;' -and $monitorImplementation -match 'return m_gpu_intel_usage;') 'Intel GPU sensor fallback is missing'
 Assert-Condition ($monitorImplementation -match 'value < 0\.0f \|\| value > 100\.0f') 'Load sensor range is not limited to 0..100'
 Assert-Condition ($monitorImplementation -match 'std::isfinite\(sum\).*std::isfinite\(temperature\)' -or $monitorImplementation -match 'std::isfinite\(temperature\)') 'Temperature aggregation is not checked for finite output'
 Assert-Condition ($monitorImplementation -match 'catch \(System::Exception\^ e\)') 'Individual managed hardware nodes are not exception-isolated'
@@ -139,6 +145,7 @@ Assert-Condition ($visitorSource -match 'auto subHardwareList = hardware->SubHar
 Assert-Condition ($visitorSource -match 'subHardware->Accept\(this\)') 'SubHardware visitor traversal is missing'
 Assert-Condition ($visitorSource -match 'computer->Traverse\(this\)') 'Computer traversal is missing'
 Assert-Condition ($traySource -match 'static void ClosePDH') 'PDH cleanup helper is missing'
+Assert-Condition ($traySource -match 'SelectObject\(g_argbTextSurface.maskDC, g_argbTextSurface.maskOldBitmap\)') 'ARGB text bitmap is not deselected before cleanup'
 Assert-Condition ($traySource -match 'Thermal Zone Information\(\*\).*High Precision Temperature') 'ACPI high-precision thermal-zone query is missing'
 Assert-Condition ($traySource -match 'static BOOL EnsureThermalQueryUnlocked') 'ACPI thermal query initialization helper is missing'
 Assert-Condition ($traySource -match 'static void CloseThermalQueryUnlocked') 'ACPI thermal query cleanup helper is missing'

@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = Join-Path $repoRoot 'dist\TrayS-compat-win11-x64'
+    $OutputDirectory = Join-Path $repoRoot ('dist\TrayS-compat-win11-{0}' -f $Architecture)
 } elseif (-not [IO.Path]::IsPathRooted($OutputDirectory)) {
     $OutputDirectory = Join-Path $repoRoot $OutputDirectory
 }
@@ -29,6 +29,12 @@ $architectureLabel = if ($Architecture -eq 'x64') { 'x64' } else { 'x86' }
 $buildDirectory = Resolve-WithinRepository (Join-Path $repoRoot ('.build-native\portable-compat-{0}' -f $architectureLabel)) 'build directory'
 $archivePath = Resolve-WithinRepository (Join-Path (Split-Path -Parent $OutputDirectory) ((Split-Path -Leaf $OutputDirectory) + '.zip')) 'archive path'
 $sourceDirectory = Join-Path $repoRoot 'TrayS'
+
+$validationScript = Join-Path $PSScriptRoot 'validate-compatibility.ps1'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $validationScript
+if ($LASTEXITCODE -ne 0) {
+    throw 'Compatibility validation failed; executable was not built.'
+}
 
 $toolchain = Get-ChildItem -LiteralPath (Join-Path $repoRoot '.buildtools\llvm-mingw') -Directory -ErrorAction SilentlyContinue |
     Where-Object {

@@ -61,8 +61,9 @@ namespace OpenHardwareMonitorApi
     {
         if (m_gpu_nvidia_temperature >= 0)
             return m_gpu_nvidia_temperature;
-        else
+        if (m_gpu_ati_temperature >= 0)
             return m_gpu_ati_temperature;
+        return m_gpu_intel_temperature;
     }
 
     float COpenHardwareMonitor::HDDTemperature()
@@ -79,8 +80,9 @@ namespace OpenHardwareMonitorApi
     {
         if (m_gpu_nvidia_usage >= 0)
             return m_gpu_nvidia_usage;
-        else
+        if (m_gpu_ati_usage >= 0)
             return m_gpu_ati_usage;
+        return m_gpu_intel_usage;
     }
 
     const std::map<std::wstring, float>& COpenHardwareMonitor::AllHDDTemperature()
@@ -176,7 +178,7 @@ namespace OpenHardwareMonitorApi
         case HardwareType::Cpu:
             temperature_name = L"Core Average";
             break;
-        case HardwareType::GpuNvidia: case HardwareType::GpuAmd:
+        case HardwareType::GpuNvidia: case HardwareType::GpuAmd: case HardwareType::GpuIntel:
             temperature_name = L"GPU Core";
             break;
         default:
@@ -216,9 +218,12 @@ namespace OpenHardwareMonitorApi
             double sum{};
             for (auto i : all_temperature)
                 sum += i;
-            temperature = sum / all_temperature.size();
-            if (std::isfinite(sum) && std::isfinite(temperature) && temperature >= -50.0f && temperature <= 255.0f)
+            const double average = sum / static_cast<double>(all_temperature.size());
+            if (std::isfinite(sum) && std::isfinite(average) && average >= -50.0 && average <= 255.0)
+            {
+                temperature = static_cast<float>(average);
                 return true;
+            }
             temperature = -1.0f;
             return false;
         }
@@ -267,8 +272,10 @@ namespace OpenHardwareMonitorApi
             double sum{};
             for (const auto& item : m_all_cpu_temperature)
                 sum += item.second;
-            temperature = sum / m_all_cpu_temperature.size();
-            if (!std::isfinite(sum) || !std::isfinite(temperature) || temperature < -50.0f || temperature > 255.0f)
+            const double average = sum / static_cast<double>(m_all_cpu_temperature.size());
+            if (std::isfinite(sum) && std::isfinite(average) && average >= -50.0 && average <= 255.0)
+                temperature = static_cast<float>(average);
+            else
                 temperature = -1.0f;
         }
         if (m_all_cpu_temperature.empty() && hardware->SubHardware != nullptr)
@@ -335,10 +342,12 @@ namespace OpenHardwareMonitorApi
         m_cpu_temperature = -1;
         m_gpu_nvidia_temperature = -1;
         m_gpu_ati_temperature = -1;
+        m_gpu_intel_temperature = -1;
         m_hdd_temperature = -1;
         m_main_board_temperature = -1;
         m_gpu_nvidia_usage = -1;
         m_gpu_ati_usage = -1;
+        m_gpu_intel_usage = -1;
         m_all_hdd_temperature.clear();
         m_all_cpu_temperature.clear();
         m_all_hdd_usage.clear();
@@ -394,6 +403,14 @@ namespace OpenHardwareMonitorApi
                             GetHardwareTemperature(hardware, m_gpu_ati_temperature);
                         if (m_gpu_ati_usage < 0)
                             GetGpuUsage(hardware, m_gpu_ati_usage);
+                        break;
+                    // Intel integrated GPUs are separate LHM hardware nodes.
+                    // Keep them as a fallback when no discrete GPU has a value.
+                    case HardwareType::GpuIntel:
+                        if (m_gpu_intel_temperature < 0)
+                            GetHardwareTemperature(hardware, m_gpu_intel_temperature);
+                        if (m_gpu_intel_usage < 0)
+                            GetGpuUsage(hardware, m_gpu_intel_usage);
                         break;
                     case HardwareType::Storage:
                     {
