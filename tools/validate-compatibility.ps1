@@ -123,13 +123,15 @@ $traySource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.cpp') -
 $updateHeaderPath = Join-Path $repoRoot 'TrayS/Update.h'
 $updateSourcePath = Join-Path $repoRoot 'TrayS/Update.cpp'
 $updateHeader = if (Test-Path -LiteralPath $updateHeaderPath) { Get-Content -LiteralPath $updateHeaderPath -Raw } else { '' }
-$updateSource = if (Test-Path -LiteralPath $updateSourcePath) { Get-Content -LiteralPath $updateSourcePath -Raw } else { '' }
+$updateSource = if (Test-Path -LiteralPath $updateSourcePath) { Get-Content -LiteralPath $updateSourcePath -Raw -Encoding UTF8 } else { '' }
 $resourceSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.rc') -Raw
 $functionSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/Function.cpp') -Raw
 $trayProject = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj') -Raw
 $trayFilters = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj.filters') -Raw
 $portableBuildPath = Join-Path $repoRoot 'tools/build-portable-compat-exe.ps1'
 $portableBuild = if (Test-Path -LiteralPath $portableBuildPath) { Get-Content -LiteralPath $portableBuildPath -Raw } else { '' }
+$portablePackagePath = Join-Path $repoRoot 'tools/package-portable-release.ps1'
+$portablePackage = if (Test-Path -LiteralPath $portablePackagePath) { Get-Content -LiteralPath $portablePackagePath -Raw } else { '' }
 $readmePath = Join-Path $repoRoot 'README.md'
 $readmeSource = if (Test-Path -LiteralPath $readmePath) { Get-Content -LiteralPath $readmePath -Raw } else { '' }
 Assert-Condition ($apiHeader -match '\*fCpu\s*=\s*-1\.0f') 'GetTemperature does not initialize CPU output'
@@ -162,8 +164,8 @@ Assert-Condition ($traySource -match 'InitializeSupportedWindowsVersion') 'Windo
 Assert-Condition ($traySource -match 'dwMajorVersion\s*>=\s*10') 'Windows 10+ version comparison is missing'
 Assert-Condition ($traySource -match 'FindDescendantByClass') 'Shell descendant window discovery helper is missing'
 Assert-Condition ($traySource -match 'EnumChildWindows\(root') 'Shell discovery does not enumerate descendant windows'
-Assert-Condition ($resourceSource -match 'TrayS 1\.6\.0') 'Maintained UI version label is missing'
-Assert-Condition ($resourceSource -match 'FILEVERSION 1,6,0,0' -and $resourceSource -match 'PRODUCTVERSION 1,6,0,0') 'Resource version is not 1.6.0'
+Assert-Condition ($resourceSource -match 'TrayS 1\.6\.1') 'Maintained UI version label is missing'
+Assert-Condition ($resourceSource -match 'FILEVERSION 1,6,1,0' -and $resourceSource -match 'PRODUCTVERSION 1,6,1,0') 'Resource version is not 1.6.1'
 Assert-Condition ($resourceSource -match 'IDC_SYSLINK_COMPAT') 'Compatibility documentation link is missing'
 Assert-Condition ($resourceSource -match 'Windows 10/11') 'Windows 10/11 UI support note is missing'
 Assert-Condition ($resourceSource -notmatch '52[Pp]o[Jj]ie|52破解|Win8只能|Win7只能|Ver 1\.3\.9') 'Obsolete UI compatibility text remains'
@@ -183,11 +185,12 @@ Assert-Condition ($portableBuild -match 'llvm-mingw') 'Portable compatibility bu
 Assert-Condition ($portableBuild -match "'x86_64-w64-windows-gnu'") 'Portable compatibility build target is not x64 MinGW'
 Assert-Condition ($portableBuild -match "'-static'") 'Portable compatibility build does not statically link its C++ runtime'
 Assert-Condition ($portableBuild -match 'TrayS-compat-win11-x64\.exe' -or $portableBuild -match 'TrayS-compat-win11-\{0\}\.exe') 'Portable compatibility output name is missing'
+Assert-Condition ($portablePackage -match 'TrayS_1\.6\.1_' -and $portablePackage -match 'FileBuildPart -ne 1') 'Portable release package version does not match the application version'
 Assert-Condition ($functionSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'WinHTTP is not loaded from System32'
 Assert-Condition ($functionSource -match 'kPriceHttpTimeoutMs\s*=\s*5000' -and $functionSource -match 'winHttpSetTimeouts\(') 'WinHTTP timeout is not bounded to 5000 ms'
 Assert-Condition ($functionSource -notmatch '(?m)^\s*(?!//).*\bLoadLibrary\s*\(') 'Function.cpp contains an unqualified LoadLibrary call'
 Assert-Condition ($functionSource -match '#if defined\(TRAYS_ENABLE_LEGACY_SERVICE\)') 'Legacy service code is not compile-time gated'
-Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.6\.0"') 'Updater version identity is missing'
+Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.6\.1"') 'Updater version identity is missing'
 Assert-Condition ($updateHeader -match 'TRAYS_UPDATE_API_PATH') 'Updater GitHub API path is missing'
 Assert-Condition ($updateSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'Updater WinHTTP is not loaded from System32'
 Assert-Condition ($updateSource -match 'WINHTTP_FLAG_SECURE') 'Updater request is not HTTPS-only'
@@ -195,6 +198,24 @@ Assert-Condition ($updateSource -match 'TrayS_%s_%s\.zip') 'Updater does not req
 Assert-Condition ($updateSource -match 'HashFileSha256') 'Updater SHA-256 verification is missing'
 Assert-Condition ($updateSource -match 'Get-FileHash') 'Updater applier does not re-check SHA-256'
 Assert-Condition ($updateSource -match 'Expand-Archive') 'Updater extraction step is missing'
+Assert-Condition ($updateSource -match '\.WaitForExit\(120000\)') 'Updater does not wait for the old process before replacing its executable'
+$extractDirectoryIndex = $updateSource.IndexOf('New-Item -ItemType Directory -Path $extract', [StringComparison]::Ordinal)
+$expandArchiveIndex = $updateSource.IndexOf('Expand-Archive -LiteralPath $zip', [StringComparison]::Ordinal)
+Assert-Condition ($extractDirectoryIndex -ge 0 -and $expandArchiveIndex -gt $extractDirectoryIndex) 'Updater must create the extraction directory before expanding the package'
+Assert-Condition ($updateSource -match '\$replacementAttempted=\$true; Move-Item' -and $updateSource -match 'Copy-Item -LiteralPath \$backup -Destination \$target -Force') 'Updater replacement does not attempt rollback after a failed install'
+Assert-Condition ($updateSource -match 'installed executable failed verification' -and $updateSource -match 'rollback failed:') 'Updater does not verify the installed file and report rollback failures'
+Assert-Condition ($updateSource -match 'TraySUpdateNative.*MessageBox' -and $updateSource -match '\$failureState' -and $updateSource -match 'rollback failed:') 'Updater failure path does not explain the recovery state to the user'
+Assert-Condition ($updateSource -match 'GrantUpdateHelperReadAccess' -and $updateSource -match 'PROTECTED_DACL_SECURITY_INFORMATION') 'Elevated updater cannot safely read temporary files created by another user account'
+Assert-Condition ($updateSource -notmatch 'TryRunTraySUpdateCommandLine|--trays-apply-update' -and $traySource -notmatch 'TryRunTraySUpdateCommandLine') 'Updater must not relaunch the executable that it is about to replace'
+$updaterScriptBuilder = New-Object Text.StringBuilder
+foreach ($scriptLiteral in [regex]::Matches($updateSource, '(?m)^\s*ps \+= L("(?:\\.|[^"\\])*");')) {
+    [void]$updaterScriptBuilder.Append((ConvertFrom-Json -InputObject $scriptLiteral.Groups[1].Value))
+}
+$embeddedUpdaterScript = $updaterScriptBuilder.ToString()
+$scriptTokens = $null
+$scriptParseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput($embeddedUpdaterScript, [ref]$scriptTokens, [ref]$scriptParseErrors)
+Assert-Condition ($embeddedUpdaterScript.Length -gt 0 -and $scriptParseErrors.Count -eq 0) 'Embedded PowerShell updater script has syntax errors'
 Assert-Condition ($updateSource -match 'TRAYS_UPDATE_EVENT_READY') 'Updater ready event is missing'
 Assert-Condition ($traySource -match 'StartTraySUpdateCheck\(hMain, FALSE\)') 'Manual update check button is not wired'
 Assert-Condition ($traySource -match 'TRAYS_UPDATE_START_TIMER') 'Automatic update timer is not wired'

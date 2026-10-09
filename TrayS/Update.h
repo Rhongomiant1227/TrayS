@@ -7,9 +7,9 @@
 // for the current process architecture.
 #define TRAYS_VERSION_MAJOR 1
 #define TRAYS_VERSION_MINOR 6
-#define TRAYS_VERSION_PATCH 0
-#define TRAYS_VERSION_STRING L"1.6.0"
-#define TRAYS_VERSION_TAG L"v1.6.0"
+#define TRAYS_VERSION_PATCH 1
+#define TRAYS_VERSION_STRING L"1.6.1"
+#define TRAYS_VERSION_TAG L"v1.6.1"
 #define TRAYS_UPDATE_REPOSITORY L"Rhongomiant1227/TrayS"
 #define TRAYS_UPDATE_API_HOST L"api.github.com"
 #define TRAYS_UPDATE_API_PATH L"/repos/Rhongomiant1227/TrayS/releases/latest"
@@ -50,5 +50,4 @@ BOOL ReadTraySAutoUpdateSetting();
 BOOL WriteTraySAutoUpdateSetting(BOOL enabled);
 BOOL StartTraySUpdateCheck(HWND notifyWindow, BOOL automatic);
 BOOL LaunchTraySUpdateApplier(const TRAYS_UPDATE_INFO* info, DWORD parentProcessId, LPCWSTR targetPath);
-BOOL TryRunTraySUpdateCommandLine();
 void FreeTraySUpdateMessage(TRAYS_UPDATE_MESSAGE* message, BOOL deleteDownloadedFile);

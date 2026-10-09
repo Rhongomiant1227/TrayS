@@ -3,6 +3,7 @@
 #include <wincrypt.h>
 #include <winhttp.h>
 #include <shellapi.h>
+#include <sddl.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -15,7 +16,6 @@ const DWORD kApiResponseLimit = 256u * 1024u;
 const ULONGLONG kPackageLimit = 128ull * 1024ull * 1024ull;
 const DWORD kUpdateTimeoutMs = 5000;
 const WCHAR kUpdateSettingName[] = L"TrayS.update.dat";
-const WCHAR kUpdateCommand[] = L"--trays-apply-update";
 const WCHAR kGitHubDownloadPrefix[] = L"https://github.com/Rhongomiant1227/TrayS/releases/download/";
 
 struct VersionNumber
@@ -672,127 +672,183 @@ static BOOL WriteUtf16File(LPCWSTR path, const std::wstring& text)
 	return success;
 }
 
-static BOOL RunPowerShellUpdate(LPCWSTR zipPath, LPCWSTR targetPath, LPCWSTR expectedHash, LPCWSTR expectedVersion)
+static std::wstring QuoteWindowsArgument(const std::wstring& argument)
 {
+	std::wstring quoted = L"\"";
+	size_t backslashes = 0;
+	for (WCHAR character : argument)
+	{
+		if (character == L'\\')
+		{
+			++backslashes;
+			continue;
+		}
+		if (character == L'\"')
+		{
+			quoted.append(backslashes * 2 + 1, L'\\');
+			quoted.push_back(character);
+			backslashes = 0;
+			continue;
+		}
+		quoted.append(backslashes, L'\\');
+		backslashes = 0;
+		quoted.push_back(character);
+	}
+	quoted.append(backslashes * 2, L'\\');
+	quoted.push_back(L'\"');
+	return quoted;
+}
+
+static BOOL CanWriteUpdateTargetDirectory(LPCWSTR targetPath)
+{
+	if (!targetPath || !targetPath[0])
+		return FALSE;
+	std::wstring directory(targetPath);
+	size_t separator = directory.find_last_of(L"\\/");
+	if (separator == std::wstring::npos)
+		return FALSE;
+	directory.resize(separator + 1);
+	for (DWORD attempt = 0; attempt < 4; ++attempt)
+	{
+		WCHAR suffix[96] = {};
+		wsprintfW(suffix, L".TrayS-update-probe-%lu-%lu.tmp", GetCurrentProcessId(), GetTickCount() + attempt);
+		std::wstring probe = directory + suffix;
+		HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL,
+			CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+		if (file != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(file);
+			return TRUE;
+		}
+		DWORD error = GetLastError();
+		if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+			return FALSE;
+	}
+	return FALSE;
+}
+
+static BOOL GetPowerShellPath(WCHAR* path, DWORD pathChars)
+{
+	if (!path || pathChars < MAX_PATH)
+		return FALSE;
+	DWORD length = GetSystemDirectoryW(path, pathChars);
+	if (length == 0 || length >= pathChars || length + ARRAYSIZE(L"\\WindowsPowerShell\\v1.0\\powershell.exe") >= pathChars)
+		return FALSE;
+	lstrcatW(path, L"\\WindowsPowerShell\\v1.0\\powershell.exe");
+	return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static BOOL GrantUpdateHelperReadAccess(LPCWSTR path)
+{
+	if (!path || !path[0])
+		return FALSE;
+	PSECURITY_DESCRIPTOR descriptor = NULL;
+	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+		L"D:P(A;;GA;;;OW)(A;;GR;;;BU)(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1, &descriptor, NULL))
+		return FALSE;
+	BOOL success = SetFileSecurityW(path, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, descriptor);
+	LocalFree(descriptor);
+	return success;
+}
+
+static BOOL LaunchPowerShellUpdate(LPCWSTR zipPath, LPCWSTR targetPath, LPCWSTR expectedHash,
+	LPCWSTR expectedVersion, DWORD parentProcessId)
+{
+	if (!zipPath || !targetPath || !expectedHash || !expectedVersion || parentProcessId == 0)
+		return FALSE;
 	WCHAR tempPath[MAX_PATH] = {};
 	DWORD tempLength = GetTempPathW(ARRAYSIZE(tempPath), tempPath);
 	if (tempLength == 0 || tempLength >= ARRAYSIZE(tempPath))
 		return FALSE;
-	WCHAR extraction[MAX_PATH] = {};
-	if (GetTempFileNameW(tempPath, L"TrU", 0, extraction) == 0)
-		return FALSE;
-	DeleteFileW(extraction);
-	if (!CreateDirectoryW(extraction, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
-		return FALSE;
 	WCHAR script[MAX_PATH] = {};
 	if (GetTempFileNameW(tempPath, L"TrS", 0, script) == 0)
-	{
-		RemoveDirectoryW(extraction);
 		return FALSE;
-	}
+
 	std::wstring ps;
 	ps += L"$ErrorActionPreference='Stop'\r\n";
 	ps += L"$zip=" + PowerShellQuote(zipPath) + L"\r\n";
-	ps += L"$extract=" + PowerShellQuote(extraction) + L"\r\n";
 	ps += L"$target=" + PowerShellQuote(targetPath) + L"\r\n";
 	ps += L"$expectedHash=" + PowerShellQuote(expectedHash) + L"\r\n";
 	ps += L"$expectedVersion=" + PowerShellQuote(expectedVersion) + L"; $expectedVersion=$expectedVersion.TrimStart('v')\r\n";
-	ps += L"if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash.ToLowerInvariant()) { throw 'hash mismatch' }\r\n";
-	ps += L"Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force\r\n";
-	ps += L"$candidate=@(Get-ChildItem -LiteralPath $extract -Filter 'TrayS.exe' -File -Recurse)\r\n";
-	ps += L"if ($candidate.Count -ne 1) { throw 'TrayS.exe missing or ambiguous' }\r\n";
-	ps += L"$version=[Diagnostics.FileVersionInfo]::GetVersionInfo($candidate[0].FullName).FileVersion\r\n";
-	ps += L"if (-not $version.StartsWith($expectedVersion + '.')) { throw 'version mismatch' }\r\n";
-	ps += L"$bytes=[IO.File]::ReadAllBytes($candidate[0].FullName); $pe=[BitConverter]::ToInt32($bytes,0x3c); $machine=[BitConverter]::ToUInt16($bytes,$pe+4)\r\n";
-	ps += L"$want=if ([IntPtr]::Size -eq 8) { 0x8664 } else { 0x14c }; if ($machine -ne $want) { throw 'architecture mismatch' }\r\n";
-	ps += L"$backup=$target+'.bak'; Copy-Item -LiteralPath $target -Destination $backup -Force\r\n";
-	ps += L"try { Copy-Item -LiteralPath $candidate[0].FullName -Destination $target -Force } catch { Copy-Item -LiteralPath $backup -Destination $target -Force; throw }\r\n";
-	ps += L"Start-Process -FilePath $target -WorkingDirectory ([IO.Path]::GetDirectoryName($target))\r\n";
-	ps += L"Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue\r\n";
+	ps += L"$parentPid=" + std::to_wstring(parentProcessId) + L"\r\n";
+	ps += L"$scriptPath=$MyInvocation.MyCommand.Path; $extract=Join-Path ([IO.Path]::GetTempPath()) ('TrayS-update-'+[guid]::NewGuid().ToString('N')); $staged=$target+'.update-'+[guid]::NewGuid().ToString('N'); $backup=$target+'.bak-'+[guid]::NewGuid().ToString('N'); $replacementAttempted=$false\r\n";
+	ps += L"try {\r\n";
+	ps += L"  $parent=Get-Process -Id $parentPid -ErrorAction SilentlyContinue; if ($parent) { if (-not $parent.WaitForExit(120000)) { throw 'TrayS did not close in time; the existing version was left in place.' }; $parent.Dispose() }\r\n";
+	ps += L"  if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash.ToLowerInvariant()) { throw 'The downloaded package checksum does not match.' }\r\n";
+	ps += L"  New-Item -ItemType Directory -Path $extract -Force | Out-Null\r\n";
+	ps += L"  Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force\r\n";
+	ps += L"  $candidate=@(Get-ChildItem -LiteralPath $extract -Filter 'TrayS.exe' -File -Recurse); if ($candidate.Count -ne 1) { throw 'The package must contain exactly one TrayS.exe.' }\r\n";
+	ps += L"  $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($candidate[0].FullName).FileVersion; if (-not $version.StartsWith($expectedVersion + '.')) { throw ('Package version mismatch: '+$version) }\r\n";
+	ps += L"  $bytes=[IO.File]::ReadAllBytes($candidate[0].FullName); if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes,0) -ne 0x5a4d) { throw 'The update executable has an invalid DOS header.' }; $pe=[BitConverter]::ToInt32($bytes,0x3c); if ($pe -lt 64 -or $pe -gt $bytes.Length-6 -or [BitConverter]::ToUInt32($bytes,$pe) -ne 0x4550) { throw 'The update executable has an invalid PE header.' }; $machine=[BitConverter]::ToUInt16($bytes,$pe+4)\r\n";
+	ps += L"  $want=if ([IntPtr]::Size -eq 8) { 0x8664 } else { 0x14c }; if ($machine -ne $want) { throw 'The update package architecture does not match this installation.' }\r\n";
+	ps += L"  Copy-Item -LiteralPath $candidate[0].FullName -Destination $staged\r\n";
+	ps += L"  if ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidate[0].FullName -Algorithm SHA256).Hash) { throw 'The staged executable failed verification.' }\r\n";
+	ps += L"  Copy-Item -LiteralPath $target -Destination $backup\r\n";
+	ps += L"  if ((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash) { throw 'The existing executable could not be backed up safely.' }\r\n";
+	ps += L"  $replacementAttempted=$true; Move-Item -LiteralPath $staged -Destination $target -Force\r\n";
+	ps += L"  if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidate[0].FullName -Algorithm SHA256).Hash) { throw 'The installed executable failed verification.' }\r\n";
+	ps += L"  Start-Process -FilePath $target -WorkingDirectory ([IO.Path]::GetDirectoryName($target)) | Out-Null\r\n";
+	ps += L"  $replacementAttempted=$false; Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue; exit 0\r\n";
+	ps += L"} catch {\r\n";
+	ps += L"  $detail=$_.Exception.Message; $failureState='旧版本文件未被修改。'; $rollbackSucceeded=$false; if ($replacementAttempted) { if (Test-Path -LiteralPath $backup) { try { Copy-Item -LiteralPath $backup -Destination $target -Force; if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash) { throw 'restored executable failed verification' }; $rollbackSucceeded=$true; $failureState='旧版本已恢复。' } catch { $failureState=('自动恢复失败，旧版本备份仍在：'+$backup); $detail += ('; rollback failed: '+$_.Exception.Message) } } else { $failureState='自动恢复失败，找不到旧版本备份。'; $detail += '; rollback backup is missing' } }; if (-not $replacementAttempted -or $rollbackSucceeded) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }; Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue\r\n";
+	ps += L"  try { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class TraySUpdateNative { [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type); }' -ErrorAction SilentlyContinue; [void][TraySUpdateNative]::MessageBox([IntPtr]::Zero, ('TrayS 更新失败：'+$failureState+'`n`n'+$detail), 'TrayS 更新', 0x30) } catch {}\r\n";
+	ps += L"  exit 1\r\n";
+	ps += L"} finally { Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue }\r\n";
 	if (!WriteUtf16File(script, ps))
 	{
 		DeleteFileW(script);
-		RemoveDirectoryW(extraction);
 		return FALSE;
 	}
 	WCHAR systemPath[MAX_PATH] = {};
-	if (GetSystemDirectoryW(systemPath, ARRAYSIZE(systemPath)) == 0 || lstrlenW(systemPath) + 32 >= ARRAYSIZE(systemPath))
+	if (!GetPowerShellPath(systemPath, ARRAYSIZE(systemPath)))
 	{
 		DeleteFileW(script);
-		RemoveDirectoryW(extraction);
 		return FALSE;
 	}
-	lstrcatW(systemPath, L"\\WindowsPowerShell\\v1.0\\powershell.exe");
-	if (GetFileAttributesW(systemPath) == INVALID_FILE_ATTRIBUTES)
+	std::wstring parameters = L"-NoProfile -ExecutionPolicy Bypass -File " + QuoteWindowsArgument(script);
+	std::wstring target(targetPath);
+	std::wstring targetDirectory = target.substr(0, target.find_last_of(L"\\/"));
+	BOOL launched = FALSE;
+	if (CanWriteUpdateTargetDirectory(targetPath))
 	{
+		std::wstring commandLine = QuoteWindowsArgument(systemPath) + L" " + parameters;
+		STARTUPINFOW startup{};
+		startup.cb = sizeof(startup);
+		startup.dwFlags = STARTF_USESHOWWINDOW;
+		startup.wShowWindow = SW_HIDE;
+		PROCESS_INFORMATION process{};
+		launched = CreateProcessW(systemPath, &commandLine[0], NULL, NULL, FALSE,
+			CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, NULL, targetDirectory.c_str(), &startup, &process);
+		if (launched)
+		{
+			CloseHandle(process.hThread);
+			CloseHandle(process.hProcess);
+		}
+	}
+	else
+	{
+		// An administrator may provide different credentials in the UAC prompt.
+		// Grant the helper inputs read access so that account can open them.
+		if (!GrantUpdateHelperReadAccess(script) || !GrantUpdateHelperReadAccess(zipPath))
+		{
+			DeleteFileW(script);
+			return FALSE;
+		}
+		SHELLEXECUTEINFOW execute{};
+		execute.cbSize = sizeof(execute);
+		execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+		execute.lpVerb = L"runas";
+		execute.lpFile = systemPath;
+		execute.lpParameters = parameters.c_str();
+		execute.lpDirectory = targetDirectory.c_str();
+		execute.nShow = SW_HIDE;
+		launched = ShellExecuteExW(&execute);
+		if (execute.hProcess)
+			CloseHandle(execute.hProcess);
+	}
+	if (!launched)
 		DeleteFileW(script);
-		RemoveDirectoryW(extraction);
-		return FALSE;
-	}
-	WCHAR command[32768] = {};
-	wsprintfW(command, L"\"%s\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"%s\"", systemPath, script);
-	STARTUPINFOW startup{};
-	startup.cb = sizeof(startup);
-	startup.dwFlags = STARTF_USESHOWWINDOW;
-	startup.wShowWindow = SW_HIDE;
-	PROCESS_INFORMATION process{};
-	BOOL launched = CreateProcessW(systemPath, command, NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, NULL, NULL, &startup, &process);
-	BOOL success = FALSE;
-	if (launched)
-	{
-		DWORD waitResult = WaitForSingleObject(process.hProcess, 120000);
-		success = waitResult == WAIT_OBJECT_0;
-		CloseHandle(process.hThread);
-		CloseHandle(process.hProcess);
-	}
-	DeleteFileW(script);
-	if (!success)
-	{
-		DeleteFileW(zipPath);
-		RemoveDirectoryW(extraction);
-	}
-	return success;
-}
-
-static BOOL ParseUpdateCommandLine(DWORD* parentPid, WCHAR* zipPath, DWORD zipChars, WCHAR* targetPath, DWORD targetChars, WCHAR* hash, WCHAR* version)
-{
-	if (!parentPid || !zipPath || !targetPath || !hash || !version)
-		return FALSE;
-	HMODULE shell32 = LoadLibraryExW(L"shell32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-	if (!shell32)
-		return FALSE;
-	typedef LPWSTR*(WINAPI* PFN_COMMAND_LINE_TO_ARGV)(LPCWSTR, int*);
-	PFN_COMMAND_LINE_TO_ARGV commandLineToArgv = (PFN_COMMAND_LINE_TO_ARGV)GetProcAddress(shell32, "CommandLineToArgvW");
-	if (!commandLineToArgv)
-	{
-		FreeLibrary(shell32);
-		return FALSE;
-	}
-	int count = 0;
-	LPWSTR* arguments = commandLineToArgv(GetCommandLineW(), &count);
-	BOOL valid = arguments && count == 7 && lstrcmpiW(arguments[1], kUpdateCommand) == 0;
-	if (valid)
-	{
-		WCHAR* end = NULL;
-		unsigned long pid = wcstoul(arguments[2], &end, 10);
-		valid = end && *end == L'\0' && pid > 0 && pid <= MAXDWORD;
-		if (valid) *parentPid = (DWORD)pid;
-	}
-	if (valid)
-		valid = lstrlenW(arguments[3]) < (int)zipChars && lstrlenW(arguments[4]) < (int)targetChars && lstrlenW(arguments[5]) < 65 && lstrlenW(arguments[6]) < 32;
-	if (valid)
-	{
-		lstrcpyW(zipPath, arguments[3]);
-		lstrcpyW(targetPath, arguments[4]);
-		lstrcpyW(hash, arguments[5]);
-		lstrcpyW(version, arguments[6]);
-		VersionNumber parsed{};
-		valid = ParseHexSha256(hash) && ParseVersionString(version, &parsed);
-	}
-	if (arguments)
-		LocalFree(arguments);
-	FreeLibrary(shell32);
-	return valid;
+	return launched;
 }
 }
 
@@ -858,49 +914,24 @@ BOOL StartTraySUpdateCheck(HWND notifyWindow, BOOL automatic)
 
 BOOL LaunchTraySUpdateApplier(const TRAYS_UPDATE_INFO* info, DWORD parentProcessId, LPCWSTR targetPath)
 {
-	if (!info || !info->downloadPath[0] || !ParseHexSha256(info->sha256) || !targetPath || !targetPath[0])
+	if (!info || parentProcessId == 0 || !targetPath || !targetPath[0] ||
+		std::find(info->version, info->version + ARRAYSIZE(info->version), L'\0') == info->version + ARRAYSIZE(info->version) ||
+		std::find(info->downloadPath, info->downloadPath + ARRAYSIZE(info->downloadPath), L'\0') == info->downloadPath + ARRAYSIZE(info->downloadPath) ||
+		!info->downloadPath[0] || !ParseHexSha256(info->sha256))
 		return FALSE;
-	WCHAR currentExe[32768] = {};
-	if (!GetCurrentExePath(currentExe, ARRAYSIZE(currentExe)))
+	VersionNumber parsedVersion{};
+	if (!ParseVersionString(info->version, &parsedVersion))
 		return FALSE;
-	WCHAR command[32768] = {};
-	wsprintfW(command, L"\"%s\" %s %lu \"%s\" \"%s\" \"%s\" \"%s\"", currentExe, kUpdateCommand, parentProcessId, info->downloadPath, targetPath, info->sha256, info->version);
-	STARTUPINFOW startup{};
-	startup.cb = sizeof(startup);
-	startup.dwFlags = STARTF_USESHOWWINDOW;
-	startup.wShowWindow = SW_HIDE;
-	PROCESS_INFORMATION process{};
-	BOOL launched = CreateProcessW(currentExe, command, NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, NULL, NULL, &startup, &process);
-	if (launched)
-	{
-		CloseHandle(process.hThread);
-		CloseHandle(process.hProcess);
-	}
-	return launched;
-}
-
-BOOL TryRunTraySUpdateCommandLine()
-{
-	int length = lstrlenW(GetCommandLineW());
-	if (length <= 0 || wcsstr(GetCommandLineW(), kUpdateCommand) == NULL)
+	if (info->sha256[64] != L'\0')
 		return FALSE;
-	DWORD parentPid = 0;
-	WCHAR zipPath[32768] = {};
-	WCHAR targetPath[32768] = {};
-	WCHAR hash[65] = {};
-	WCHAR version[32] = {};
-	if (!ParseUpdateCommandLine(&parentPid, zipPath, ARRAYSIZE(zipPath), targetPath, ARRAYSIZE(targetPath), hash, version))
+	WCHAR fullTargetPath[32768] = {};
+	DWORD fullTargetLength = GetFullPathNameW(targetPath, ARRAYSIZE(fullTargetPath), fullTargetPath, NULL);
+	if (fullTargetLength == 0 || fullTargetLength >= ARRAYSIZE(fullTargetPath))
 		return FALSE;
-	HANDLE parent = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, parentPid);
-	if (parent)
-	{
-		WaitForSingleObject(parent, 60000);
-		CloseHandle(parent);
-	}
-	BOOL applied = RunPowerShellUpdate(zipPath, targetPath, hash, version);
-	if (!applied)
-		MessageBoxW(NULL, L"TrayS 更新失败，旧版本仍保留。", L"TrayS", MB_OK | MB_ICONWARNING);
-	return TRUE;
+	DWORD attributes = GetFileAttributesW(fullTargetPath);
+	if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY))
+		return FALSE;
+	return LaunchPowerShellUpdate(info->downloadPath, fullTargetPath, info->sha256, info->version, parentProcessId);
 }
 
 void FreeTraySUpdateMessage(TRAYS_UPDATE_MESSAGE* message, BOOL deleteDownloadedFile)

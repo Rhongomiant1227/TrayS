@@ -2076,10 +2076,6 @@ extern "C" void WinMainCRTStartup()
 {
 	ConfigurePortableDpiAwareness();
 	ConfigureSafeDllSearch();
-	// The update helper must run before mappings, Explorer discovery, settings,
-	// or any optional hardware library can be touched by the normal UI path.
-	if (TryRunTraySUpdateCommandLine())
-		return;
 	LPWSTR lpCmdLine;
 #else
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
@@ -2087,9 +2083,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	UNREFERENCED_PARAMETER(lpCmdLine);
 	ConfigurePortableDpiAwareness();
 	ConfigureSafeDllSearch();
-	if (TryRunTraySUpdateCommandLine())
-		return 0;
-
 /*
 	if (lpCmdLine[0] == L'c')////打开控制面板
 	{

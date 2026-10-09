@@ -22,7 +22,9 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 本仓库来自上游项目 [cgbsmy/TrayS](https://github.com/cgbsmy/TrayS) 的 fork，由 [Rhongomiant1227/TrayS](https://github.com/Rhongomiant1227/TrayS) 继续维护。上游版本已经比较老，面对新一代 AMD 平台、混合显卡、Windows 11 Shell 和现代安全软件时，容易出现兼容性或告警问题；本 fork 的目标是保留 TrayS 的轻巧体验，同时把高风险、过时和容易误伤系统的路径收紧。
 
-当前维护版本：**TrayS 1.6.0**
+当前维护版本：**TrayS 1.6.1**
+
+1.6.1 修复自动更新时旧程序退出后没有替换新版本的问题；替换失败会恢复旧文件并显示原因。
 
 ## ✨ 现在有什么不一样？
 
@@ -63,8 +65,8 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 更新流程会从固定的 GitHub HTTPS API 查询最新 Release，严格选择当前版本和架构对应的资产，例如：
 
 ```text
-TrayS_1.6.0_x64.zip
-TrayS_1.6.0_x86.zip
+TrayS_1.6.1_x64.zip
+TrayS_1.6.1_x86.zip
 ```
 
 下载包在安装前会检查 Release digest、本地 SHA-256、版本资源和 PE 架构。程序会先退出，再由临时 helper 完成替换并重启；失败时保留旧 EXE，不会把半个更新包覆盖到正在运行的程序上。更新过程不打开浏览器，也不调用第三方下载器。
@@ -122,13 +124,13 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
   -Platform x64 -Configuration Release `
-  -PackageName TrayS_1.6.0_x64 -Force
+  -PackageName TrayS_1.6.1_x64 -Force
 
 # x86
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
   -Platform Win32 -Configuration Release `
-  -PackageName TrayS_1.6.0_x86 -Force
+  -PackageName TrayS_1.6.1_x86 -Force
 ```
 
 默认包只包含 `TrayS.exe`、`COMPATIBILITY.md`、`PACKAGE.txt` 和 `SHA256SUMS.txt`。它不会把 `.buildtools`、`Bin` 中间文件、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 或 LHM DLL 打进去。`-IncludeLhm` 只用于隔离测试，不是默认发布方案。
