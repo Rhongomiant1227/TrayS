@@ -26,7 +26,7 @@ if ([string]::IsNullOrWhiteSpace($PackageName)) {
     # Keep the product name in the archive so an extracted release is
     # immediately recognizable instead of looking like an anonymous legacy
     # `_x64_ALL_...` build.
-    $PackageName = "TrayS_1.5.0_${platformLabel}"
+    $PackageName = "TrayS_1.6.0_${platformLabel}"
 }
 
 $solutionPath = Join-Path $repoRoot 'TrayS.sln'

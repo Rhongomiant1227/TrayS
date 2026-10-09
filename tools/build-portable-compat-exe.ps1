@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory,
-    [switch]$Force
+    [switch]$Force,
+    [ValidateSet('x64', 'x86')]
+    [string]$Architecture = 'x64'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,7 +25,8 @@ function Resolve-WithinRepository([string]$path, [string]$label) {
 }
 
 $OutputDirectory = Resolve-WithinRepository $OutputDirectory 'OutputDirectory'
-$buildDirectory = Resolve-WithinRepository (Join-Path $repoRoot '.build-native\portable-compat-x64') 'build directory'
+$architectureLabel = if ($Architecture -eq 'x64') { 'x64' } else { 'x86' }
+$buildDirectory = Resolve-WithinRepository (Join-Path $repoRoot ('.build-native\portable-compat-{0}' -f $architectureLabel)) 'build directory'
 $archivePath = Resolve-WithinRepository (Join-Path (Split-Path -Parent $OutputDirectory) ((Split-Path -Leaf $OutputDirectory) + '.zip')) 'archive path'
 $sourceDirectory = Join-Path $repoRoot 'TrayS'
 
@@ -66,12 +69,12 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $buildDirectory -Force | Out-Null
 
 $compileFlags = @(
-    '-target', 'x86_64-w64-windows-gnu',
+    '-target', $(if ($Architecture -eq 'x64') { 'x86_64-w64-windows-gnu' } else { 'i686-w64-windows-gnu' }),
     '-std=c++17',
     '-D_DEBUG',
     '-D_UNICODE',
     '-DUNICODE',
-    '-D_WIN64',
+    $(if ($Architecture -eq 'x64') { '-D_WIN64' } else { '-D_WIN32' }),
     '-DTRAYS_PORTABLE_COMPAT',
     '-O2',
     '-g0',
@@ -103,7 +106,7 @@ $resourceObjectPath = Join-Path $buildDirectory 'TrayS_res.o'
 Push-Location $sourceDirectory
 try {
     Write-Host 'Compiling TrayS.rc'
-    & $windres '--codepage=65001' '--target=x86_64-w64-mingw32' '-I' $sourceDirectory $temporaryResourcePath '-o' $resourceObjectPath
+    & $windres '--codepage=65001' ('--target={0}' -f $(if ($Architecture -eq 'x64') { 'x86_64-w64-mingw32' } else { 'i686-w64-mingw32' })) '-I' $sourceDirectory $temporaryResourcePath '-o' $resourceObjectPath
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $resourceObjectPath -PathType Leaf)) {
         throw "LLVM-MinGW failed to compile TrayS.rc (exit code $LASTEXITCODE)."
     }
@@ -111,17 +114,17 @@ try {
     Pop-Location
 }
 
-$exePath = Join-Path $OutputDirectory 'TrayS-compat-win11-x64.exe'
+$exePath = Join-Path $OutputDirectory ('TrayS-compat-win11-{0}.exe' -f $architectureLabel)
 $linkLibraries = @(
     '-luser32', '-lgdi32', '-lcomctl32', '-lshell32', '-lole32', '-loleaut32', '-luuid',
     '-loleacc', '-ladvapi32', '-lpsapi', '-liphlpapi', '-lwinhttp', '-lpdh',
     '-ldwmapi'
 )
-Write-Host 'Linking a self-contained x64 GUI executable'
+Write-Host ("Linking a self-contained {0} GUI executable" -f $architectureLabel)
 # _DEBUG selects the regular wWinMain path in the legacy source. The binary is
 # still optimized, and -static removes the compiler's libc++/libunwind DLL
 # dependency so the copied EXE runs directly from the output directory.
-& $clang '-target' 'x86_64-w64-windows-gnu' '-municode' '-mwindows' '-static' '-D_DEBUG' '-DTRAYS_PORTABLE_COMPAT' '-O2' '-o' $exePath `
+& $clang '-target' $(if ($Architecture -eq 'x64') { 'x86_64-w64-windows-gnu' } else { 'i686-w64-windows-gnu' }) '-municode' '-mwindows' '-static' '-D_DEBUG' '-DTRAYS_PORTABLE_COMPAT' '-O2' '-o' $exePath `
     (Join-Path $buildDirectory 'TrayS.o') `
     (Join-Path $buildDirectory 'Function.o') `
     (Join-Path $buildDirectory 'Update.o') `
@@ -131,8 +134,8 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exePath -PathType Leaf
 }
 
 $headerText = (& $readobj '--file-headers' $exePath | Out-String)
-if ($headerText -notmatch 'IMAGE_FILE_MACHINE_AMD64' -or $headerText -notmatch 'IMAGE_SUBSYSTEM_WINDOWS_GUI') {
-    throw 'The generated file is not a Windows x64 GUI executable.'
+if ($headerText -notmatch $(if ($Architecture -eq 'x64') { 'IMAGE_FILE_MACHINE_AMD64' } else { 'IMAGE_FILE_MACHINE_I386' }) -or $headerText -notmatch 'IMAGE_SUBSYSTEM_WINDOWS_GUI') {
+    throw ('The generated file is not a Windows {0} GUI executable.' -f $architectureLabel)
 }
 $imports = (& $readobj '--coff-imports' $exePath | Out-String)
 if ($imports -match '(?im)Name:\s+(libc\+\+|libunwind|libwinpthread-1)\.dll') {
@@ -144,7 +147,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'COMPATIBILITY.md') -Destination (Jo
 Copy-Item -LiteralPath (Join-Path $repoRoot 'MEMORY_AUDIT.md') -Destination (Join-Path $OutputDirectory 'MEMORY_AUDIT.md')
 $buildInfo = @(
     'TrayS compatibility validation executable',
-    'Target: Windows 10/11 x64',
+    ('Target: Windows 10/11 {0}' -f $architectureLabel),
     'Entry path: Win32 GUI (wWinMain)',
     'Runtime: LLVM-MinGW statically linked C++ runtime',
     ('Toolchain: {0}' -f $toolchain.Name),
