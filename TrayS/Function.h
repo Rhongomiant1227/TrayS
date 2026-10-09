@@ -1,4 +1,4 @@
-#include <windows.h>
+ï»¿#include <windows.h>
 #include <shellapi.h>
 #include <Psapi.h>
 #include <Mmdeviceapi.h>
@@ -17,9 +17,9 @@
 using namespace Gdiplus;
 */
 
-const WCHAR lpServiceName[] = L"TrayS";//³ÌĞòÃû
-const WCHAR szShellTray[] = L"Shell_TrayWnd";//Ö÷ÈÎÎñÀ¸ÀàÃû
-const WCHAR szSecondaryTray[] = L"Shell_SecondaryTrayWnd";//¸±ÈÎÎñÀ¸ÀàÃû
+const WCHAR lpServiceName[] = L"TrayS";//ç¨‹åºå
+const WCHAR szShellTray[] = L"Shell_TrayWnd";//ä¸»ä»»åŠ¡æ ç±»å
+const WCHAR szSecondaryTray[] = L"Shell_SecondaryTrayWnd";//å‰¯ä»»åŠ¡æ ç±»å
 typedef enum _WINDOWCOMPOSITIONATTRIB
 {
 	WCA_UNDEFINED = 0,
@@ -76,18 +76,18 @@ typedef struct _ACCENT_POLICY
 	DWORD AnimationId;
 } ACCENT_POLICY;
 typedef BOOL(WINAPI* pfnSetWindowCompositionAttribute)(HWND, struct _WINDOWCOMPOSITIONATTRIBDATA*);
-void		SetToCurrentPath();//ÉèÖÃ½ø³ÌÂ·¾¶Îªµ±Ç°Â·¾¶
-BOOL		RunProcess(LPTSTR szExe, const WCHAR* szCommandLine,HANDLE *pProcess=NULL);//ÔËĞĞ³ÌĞò
-BOOL		SetWindowCompositionAttribute(HWND hWnd, ACCENT_STATE mode, DWORD AlphaColor,BOOL bWin11=FALSE);//ÉèÖÃ´°¿ÚWIN10·ç¸ñ
-HICON		GetIcon(HWND hWnd, BOOL* bUWP, HWND* hUICoreWnd, int IconSize);//»ñÈ¡´°¿ÚÍ¼±ê
-BOOL		GetProcessFileName(DWORD dwProcessId, LPTSTR pszFileName, DWORD dwFileNameLength);//Í¨¹ı½ø³ÌID»ñÈ¡Ä¿Â¼ÎÄ¼şÃû
-BOOL		SetForeground(HWND hWnd);//Ç¿ÖÆÉèÖÃ´°¿ÚÎªÇ°Ì¨
-void		lstrlwr(WCHAR* wString, size_t SizeInWords);//×Ö·û´®×ªĞ¡Ğ´
-wchar_t*	lstrstr(const wchar_t* str, const wchar_t* sub);//×Ö·û´®²éÕÒ
-BOOL		OpenWindowPath(HWND hWnd);//´ò¿ª´°¿ÚËùÔÚµÄ½ø³ÌÂ·¾¶
-BOOL		OpenProcessPath(DWORD dwProcessId);//Í¨¹ı½ø³ÌID´ò¿ª½ø³ÌµÄÂ·¾¶
-int			GetScreenRect(HWND hWnd, LPRECT lpRect, BOOL bTray);//»ñÈ¡´°¿ÚËùÔÚµÄÆÁÄ»´óĞ¡¿É¼õÈ¥ÈÎÎñÀ¸
-BOOL		GetSetVolume(BOOL bSet, HWND hWnd, DWORD dwProcessId, float* fVolume, BOOL* bMute, BOOL IsMixer);//»ñÈ¡ÓëÉèÖÃ½ø³ÌÒôÁ¿
+void		SetToCurrentPath();//è®¾ç½®è¿›ç¨‹è·¯å¾„ä¸ºå½“å‰è·¯å¾„
+BOOL		RunProcess(LPTSTR szExe, const WCHAR* szCommandLine,HANDLE *pProcess=NULL);//è¿è¡Œç¨‹åº
+BOOL		SetWindowCompositionAttribute(HWND hWnd, ACCENT_STATE mode, DWORD AlphaColor,BOOL bWin11=FALSE);//è®¾ç½®çª—å£WIN10é£æ ¼
+HICON		GetIcon(HWND hWnd, BOOL* bUWP, HWND* hUICoreWnd, int IconSize);//è·å–çª—å£å›¾æ ‡
+BOOL		GetProcessFileName(DWORD dwProcessId, LPTSTR pszFileName, DWORD dwFileNameLength);//é€šè¿‡è¿›ç¨‹IDè·å–ç›®å½•æ–‡ä»¶å
+BOOL		SetForeground(HWND hWnd);//å¼ºåˆ¶è®¾ç½®çª—å£ä¸ºå‰å°
+void		lstrlwr(WCHAR* wString, size_t SizeInWords);//å­—ç¬¦ä¸²è½¬å°å†™
+wchar_t*	lstrstr(const wchar_t* str, const wchar_t* sub);//å­—ç¬¦ä¸²æŸ¥æ‰¾
+BOOL		OpenWindowPath(HWND hWnd);//æ‰“å¼€çª—å£æ‰€åœ¨çš„è¿›ç¨‹è·¯å¾„
+BOOL		OpenProcessPath(DWORD dwProcessId);//é€šè¿‡è¿›ç¨‹IDæ‰“å¼€è¿›ç¨‹çš„è·¯å¾„
+int			GetScreenRect(HWND hWnd, LPRECT lpRect, BOOL bTray);//è·å–çª—å£æ‰€åœ¨çš„å±å¹•å¤§å°å¯å‡å»ä»»åŠ¡æ 
+BOOL		GetSetVolume(BOOL bSet, HWND hWnd, DWORD dwProcessId, float* fVolume, BOOL* bMute, BOOL IsMixer);//è·å–ä¸è®¾ç½®è¿›ç¨‹éŸ³é‡
 
 #if defined(TRAYS_ENABLE_LEGACY_SERVICE) && TRAYS_ENABLE_LEGACY_SERVICE
 void		EmptyProcessMemory(DWORD pID=NULL);
@@ -119,8 +119,8 @@ BOOL		pWTSQueryUserToken(ULONG SessionId, PHANDLE phToken);
 BOOL		pCreateEnvironmentBlock(_At_((PZZWSTR*)lpEnvironment, _Outptr_)LPVOID* lpEnvironment, _In_opt_ HANDLE  hToken, _In_ BOOL bInherit);
 BOOL		pDestroyEnvironmentBlock(LPVOID lpEnvironment);
 #endif
-int			DrawShadowText(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat, COLORREF bColor, BOOL bYes);//»æÖÆÒõÓ°ÎÄ×Ö
-DWORD		GetSystemUsesLightTheme();//»ñÈ¡ÏµÍ³Ö÷ÌâÑÕÉ«Ä£Ê½
+int			DrawShadowText(HDC hDC, LPCTSTR lpString, int nCount, LPRECT lpRect, UINT uFormat, COLORREF bColor, BOOL bYes);//ç»˜åˆ¶é˜´å½±æ–‡å­—
+DWORD		GetSystemUsesLightTheme();//è·å–ç³»ç»Ÿä¸»é¢˜é¢œè‰²æ¨¡å¼
 BOOL		pChangeWindowMessageFilter(UINT message, DWORD dwFlag);
 UINT		pGetDpiForWindow(HWND hWnd);
 UINT_PTR	pSHAppBarMessage(DWORD dwMessage,PAPPBARDATA pData);

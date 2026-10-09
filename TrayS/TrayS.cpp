@@ -1,4 +1,4 @@
-// TrayS.cpp : 定义应用程序的入口点。
+﻿// TrayS.cpp : 定义应用程序的入口点。
 //
 #ifdef _WIN64
 #pragma comment(linker,"/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")

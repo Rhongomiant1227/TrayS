@@ -20,6 +20,46 @@ foreach ($project in @('OpenHardwareMonitorApi/OpenHardwareMonitorApi.vcxproj', 
     }
 }
 
+# Source files contain Chinese UI text. Do not let MSVC infer the decoding from
+# the machine's active code page, and keep the C++ headers in the same UTF-8
+# encoding so builds behave consistently across locales.
+$strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+foreach ($project in @('OpenHardwareMonitorApi/OpenHardwareMonitorApi.vcxproj', 'TrayS/TrayS.vcxproj')) {
+    $projectPath = Join-Path $repoRoot $project
+    try {
+        [xml]$projectXml = Get-Content -LiteralPath $projectPath -Raw
+        $compileGroups = @($projectXml.Project.ItemDefinitionGroup)
+        Assert-Condition ($compileGroups.Count -eq 4) "Expected four build configurations in $project"
+        foreach ($group in $compileGroups) {
+            Assert-Condition ($group.ClCompile.AdditionalOptions -match '(?i)(^|\s)/utf-8(?:\s|$)') "MSVC UTF-8 source mode is missing in $project"
+        }
+
+        $projectDirectory = Split-Path -Parent $projectPath
+        foreach ($itemGroup in $projectXml.Project.ItemGroup) {
+            foreach ($source in @($itemGroup.ClCompile) + @($itemGroup.ClInclude)) {
+                if (-not $source.Include -or [IO.Path]::GetExtension($source.Include) -notin @('.cpp', '.h')) {
+                    continue
+                }
+                $sourcePath = Join-Path $projectDirectory $source.Include
+                if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+                    continue
+                }
+                try {
+                    $sourceText = $strictUtf8.GetString([IO.File]::ReadAllBytes($sourcePath))
+                    Assert-Condition (-not $sourceText.Contains([char]0xFFFD)) "Replacement character found in source: $sourcePath"
+                } catch [System.Text.DecoderFallbackException] {
+                    [void]$failures.Add("C++ source is not valid UTF-8: $sourcePath")
+                }
+            }
+        }
+    } catch {
+        [void]$failures.Add("Unable to validate source encoding settings: $project")
+    }
+}
+
+$resourceBytes = [IO.File]::ReadAllBytes((Join-Path $repoRoot 'TrayS/TrayS.rc'))
+Assert-Condition ($resourceBytes.Length -ge 2 -and $resourceBytes[0] -eq 0xff -and $resourceBytes[1] -eq 0xfe) 'TrayS.rc must remain UTF-16LE so localized resource text is decoded consistently'
+
 $ohmaProject = [xml](Get-Content -LiteralPath (Join-Path $repoRoot 'OpenHardwareMonitorApi/OpenHardwareMonitorApi.vcxproj') -Raw)
 $targetFramework = $ohmaProject.Project.PropertyGroup | Where-Object { $_.Label -eq 'Globals' } | Select-Object -ExpandProperty TargetFrameworkVersion
 Assert-Condition ($targetFramework -eq 'v4.7.2') 'TargetFrameworkVersion must be v4.7.2'
