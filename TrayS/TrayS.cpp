@@ -1666,10 +1666,8 @@ static DWORD TemperatureForDisplay(float value)
 int GetCpuTemp(DWORD Core)
 {
 	UNREFERENCED_PARAMETER(Core);
-	// Prefer the Windows/ACPI thermal-zone path. It remains available in the
-	// default package and does not require LHM, WinRing0, PawnIO, MSR, or PCI
-	// access. A missing ACPI zone is a normal unsupported-sensor condition.
-	int acpiTemperature = GetAcpiCpuTemperature();
+	// Prefer the CPU's own package sensor when the managed backend is available.
+	// ACPI thermal zones are a fallback and may describe a different component.
 	if (hOHMA && GetTemperature)
 	{
 		float fCpu = -1.0f, fHdd = -1.0f, fGpu = -1.0f, fCpuPackge = -1.0f;
@@ -1694,21 +1692,54 @@ int GetCpuTemp(DWORD Core)
 		if (cpuTemperature != 0)
 			return cpuTemperature <= INT_MAX ? (int)cpuTemperature : 0;
 	}
-	return acpiTemperature;
+	return GetAcpiCpuTemperature();
 }
 //////////////////////////////////////////////////载入温度DLL
+static DWORD g_pawnIoProbeError = ERROR_SUCCESS;
+
 static BOOL IsPawnIoDeviceAvailable()
 {
 	// Probe only the already-running PawnIO device. TrayS never installs or
 	// starts the driver; if it is absent or inaccessible, ACPI remains the
 	// temperature source and the managed monitor is not loaded.
+	// Match LHM's FileAccess.ReadWrite (0x3). The official driver still requires
+	// an elevated token; changing the requested rights cannot bypass its ACL.
 	HANDLE device = CreateFileW(L"\\\\?\\GLOBALROOT\\Device\\PawnIO",
-		GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		FILE_READ_DATA | FILE_WRITE_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
 		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (device == INVALID_HANDLE_VALUE)
+	{
+		g_pawnIoProbeError = GetLastError();
+		if (g_pawnIoProbeError == ERROR_ACCESS_DENIED)
+			TraySRuntimeLog(L"CPU temperature: PawnIO access denied; exit TrayS and run it as administrator to enable hardware sensors.");
+		else
+			TraySRuntimeLogFormat(L"CPU temperature: PawnIO device unavailable, error=%lu", g_pawnIoProbeError);
 		return FALSE;
+	}
+	g_pawnIoProbeError = ERROR_SUCCESS;
 	CloseHandle(device);
 	return TRUE;
+}
+
+static void UpdateCpuTemperatureStatus(HWND dialog)
+{
+	LPCWSTR status = L"CPU温度：未开启";
+	AcquireSRWLockShared(&g_temperatureLock);
+	if (TraySave.bMonitorTemperature)
+	{
+		if (hOHMA && GetTemperature)
+			status = L"CPU温度：已加载硬件监控";
+		else if (HasAcpiTemperaturePath())
+			status = L"CPU温度：使用 Windows 热区";
+		else if (g_pawnIoProbeError == ERROR_ACCESS_DENIED)
+			status = L"CPU温度：请以管理员身份运行";
+		else if (g_pawnIoProbeError == ERROR_FILE_NOT_FOUND || g_pawnIoProbeError == ERROR_PATH_NOT_FOUND)
+			status = L"CPU温度：需安装 PawnIO";
+		else
+			status = L"CPU温度：不可用，请查看帮助";
+	}
+	ReleaseSRWLockShared(&g_temperatureLock);
+	SetDlgItemTextW(dialog, IDC_LABEL_CPU_TEMPERATURE_STATUS, status);
 }
 
 static void FreeTemperatureDLLUnlocked();
@@ -1736,7 +1767,11 @@ void LoadTemperatureDLL()
 	// PawnIO is an external prerequisite for the LHM CPU backend. Merely
 	// probing its device above does not change driver or service state.
 	if (!bLhmDisabled)
+	{
 		hOHMA = LoadApplicationLibrarySafe(L"OpenHardwareMonitorApi.dll");
+		if (!hOHMA)
+			TraySRuntimeLogFormat(L"CPU temperature: monitor DLL load failed, error=%lu", GetLastError());
+	}
 	if (hOHMA)
 	{
 		GetTemperature = (pfnGetTemperature) GetProcAddress(hOHMA, "GetTemperature");
@@ -2601,8 +2636,8 @@ DWORD WINAPI GetDataThreadProc(PVOID pParam)//获取温度占用硬盘线程
 				TrayData->iTemperature2 = 0;
 				TrayData->iHddTemperature = 0;
 				// CPU temperature is not limited to the optional managed monitor:
-				// GetCpuTemp first queries the safe Windows/ACPI path and only then
-				// consults an explicitly enabled third-party backend.
+				// GetCpuTemp prefers the hardware package sensor when available,
+				// then falls back to the Windows/ACPI thermal-zone path.
 				TrayData->iTemperature1 = GetCpuTemp(1);
 				// Vendor APIs are a safe supplemental path when the managed monitor
 				// has no GPU sensor (common with hybrid/older AMD drivers). They do
@@ -6769,6 +6804,7 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 	{
 	case WM_INITDIALOG:
 		TraySRuntimeLog(L"SettingProc WM_INITDIALOG");
+		UpdateCpuTemperatureStatus(hDlg);
 		return (INT_PTR)TRUE;
 	case WM_NOTIFY:
 		if (lParam == 0)
@@ -6830,7 +6866,11 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		}
 		break;
 	case WM_COMMAND:
-		if (LOWORD(wParam) == IDC_BUTTON_OFFSET_RESET && HIWORD(wParam) == BN_CLICKED)
+		if (LOWORD(wParam) == IDC_BUTTON_CPU_TEMPERATURE_HELP && HIWORD(wParam) == BN_CLICKED)
+		{
+			(void)pShellExecute(hDlg, L"open", L"https://github.com/Rhongomiant1227/TrayS/blob/master/COMPATIBILITY.md#cpu-温度设置", NULL, NULL, SW_SHOW);
+		}
+		else if (LOWORD(wParam) == IDC_BUTTON_OFFSET_RESET && HIWORD(wParam) == BN_CLICKED)
 		{
 			SetMonitorOffset(0, 0);
 			UpdateMonitorOffsetControls(hDlg);
@@ -7016,6 +7056,7 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 				LoadTemperatureDLL();
 			else
 				FreeTemperatureDLL();
+			UpdateCpuTemperatureStatus(hDlg);
 			WriteReg();
 			SetWH();
 			AdjustWindowPos();

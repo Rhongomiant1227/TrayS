@@ -3,6 +3,7 @@
 #include "framework.h"
 #include "TrayS.h"
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -219,6 +220,86 @@ static void TestPopupLayout()
     CheckRect(-1582, -397, 38, 100);
 }
 
+static float reviewCpuTemperature = 55.125f;
+static int reviewAcpiSamples = 0;
+
+static void ReviewGetTemperature(float* cpu, float* gpu, float* mainboard,
+    float* disk, int diskIndex, float* package)
+{
+    if (cpu) *cpu = reviewCpuTemperature;
+    if (package) *package = reviewCpuTemperature;
+    if (gpu) *gpu = -1.0f;
+    if (mainboard) *mainboard = -1.0f;
+    if (disk) *disk = -1.0f;
+}
+
+static ULONG WINAPI ReviewCollectThermalData(PDH_HQUERY)
+{
+    ++reviewAcpiSamples;
+    return ERROR_SUCCESS;
+}
+
+static ULONG WINAPI ReviewReadThermalCounter(PDH_HCOUNTER, DWORD, LPDWORD type,
+    PPDH_FMT_COUNTERVALUE value)
+{
+    *type = 0;
+    value->CStatus = PDH_CSTATUS_VALID_DATA;
+    value->doubleValue = 303.15; // 30 C, deliberately different from the CPU.
+    return ERROR_SUCCESS;
+}
+
+static void TestCpuTemperatureSources()
+{
+    // Inject both providers so this regression never opens hardware devices.
+    TraySave.szDisk = L'\0';
+    thermalProbeAttempted = TRUE;
+    hThermalQuery = reinterpret_cast<HQUERY>(1);
+    hThermalCounters[0] = reinterpret_cast<HCOUNTER>(1);
+    thermalCounterCount = 1;
+    thermalCounterUsesHighPrecision = FALSE;
+    ThermalPdhCollectQueryData = ReviewCollectThermalData;
+    ThermalPdhGetFormattedCounterValue = ReviewReadThermalCounter;
+    hOHMA = reinterpret_cast<HMODULE>(1);
+    GetTemperature = ReviewGetTemperature;
+    reviewAcpiSamples = 0;
+    reviewCpuTemperature = 55.125f;
+    Check(GetCpuTemp(1) == 55, "CPU package sensor lost priority to the ACPI thermal zone");
+    Check(reviewAcpiSamples == 0, "A usable CPU package unnecessarily sampled ACPI");
+    reviewCpuTemperature = std::numeric_limits<float>::quiet_NaN();
+    Check(GetCpuTemp(1) == 30, "Invalid hardware reading did not fall back to ACPI");
+    reviewCpuTemperature = std::numeric_limits<float>::infinity();
+    Check(GetCpuTemp(1) == 30, "Infinite hardware reading did not fall back to ACPI");
+    reviewCpuTemperature = -1.0f;
+    Check(GetCpuTemp(1) == 30, "Missing hardware reading did not fall back to ACPI");
+    hOHMA = NULL;
+    GetTemperature = NULL;
+    Check(GetCpuTemp(1) == 30, "ACPI-only temperature became unavailable");
+    hThermalQuery = NULL;
+    hThermalCounters[0] = NULL;
+    thermalCounterCount = 0;
+    ThermalPdhCollectQueryData = NULL;
+    ThermalPdhGetFormattedCounterValue = NULL;
+    Check(GetCpuTemp(1) == 0, "Missing providers produced a fake CPU temperature");
+
+    hSetting = MakeWindow(WS_POPUP);
+    MakeWindow(WS_CHILD, hSetting, IDC_LABEL_CPU_TEMPERATURE_STATUS);
+    TraySave.bMonitorTemperature = TRUE;
+    g_pawnIoProbeError = ERROR_ACCESS_DENIED;
+    UpdateCpuTemperatureStatus(hSetting);
+    wchar_t status[128]{};
+    GetDlgItemTextW(hSetting, IDC_LABEL_CPU_TEMPERATURE_STATUS, status, 128);
+    Check(wcsstr(status, L"管理员") != NULL, "PawnIO access denied has no administrator guidance");
+    g_pawnIoProbeError = ERROR_FILE_NOT_FOUND;
+    UpdateCpuTemperatureStatus(hSetting);
+    GetDlgItemTextW(hSetting, IDC_LABEL_CPU_TEMPERATURE_STATUS, status, 128);
+    Check(wcsstr(status, L"安装 PawnIO") != NULL, "Missing PawnIO has no installation guidance");
+    TraySave.bMonitorTemperature = FALSE;
+    DestroyWindow(hSetting);
+    hSetting = NULL;
+    g_pawnIoProbeError = ERROR_SUCCESS;
+    thermalProbeAttempted = FALSE;
+}
+
 int main()
 {
     hInst = GetModuleHandleW(NULL);
@@ -242,7 +323,8 @@ int main()
         { "Calibration capture loss/cancel", TestCaptureLoss },
         { "Independent calibration sliders", TestSliders },
         { "Legacy taskbar on negative monitor origin", TestLegacyLayout },
-        { "Composition and fullscreen vertical offsets", TestPopupLayout }
+        { "Composition and fullscreen vertical offsets", TestPopupLayout },
+        { "CPU package priority, ACPI fallback and permission guidance", TestCpuTemperatureSources }
     };
     for (const auto& test : tests)
     {

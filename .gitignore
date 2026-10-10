@@ -380,3 +380,10 @@ tools/*diag.log
 tools/build-tools-install.log
 tools/reference-assemblies/
 OpenHardwareMonitorApi/mscoree.lib
+
+# Architecture-specific third-party runtime inputs are source dependencies,
+# not Visual Studio output directories. Keep clean clones buildable.
+!OpenHardwareMonitorApi/ThirdParty/LibreHardwareMonitor-0.9.6/x64/
+!OpenHardwareMonitorApi/ThirdParty/LibreHardwareMonitor-0.9.6/x64/LibreHardwareMonitorLib.dll
+!OpenHardwareMonitorApi/ThirdParty/LibreHardwareMonitor-0.9.6/x86/
+!OpenHardwareMonitorApi/ThirdParty/LibreHardwareMonitor-0.9.6/x86/LibreHardwareMonitorLib.dll

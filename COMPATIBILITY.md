@@ -19,7 +19,7 @@
 - 托管硬件遍历按计算机、硬件集合和单个子硬件节点分层捕获异常；导出的 `GetTemperature` 也将更新、映射读取和数值转换置于同一 C ABI 异常边界。AMD 固件切换、设备热插拔或某个传感器提供者短暂故障时，其余硬件仍可继续刷新，失败字段显示为不可用。
 - 温度读数仅接受有限的 `-50–255°C` 值；GPU 与硬盘负载另行限定为 `0–100%`，温度平均值和导出前数值均会再次检查。这样可阻止传感器返回的 NaN、无穷或异常哨兵值进入 TrayS 的整数显示字段。
 - TrayS 已移除自己的 WinRing0 模块句柄、驱动文件、旧 import library 和 AMD/Intel 固定 PCI/MSR 回退路径；NVIDIA/AMD 显卡厂商 API 仍作为独立的只读温度路径。LHM 0.9.6 使用 PawnIO 后端，TrayS 只在 PawnIO 设备已经安装且可访问时加载它。TrayS 不安装、不启动或捆绑 PawnIO 驱动，也不会回退到 WinRing0。
-- CPU 温度路径先读取 Windows/ACPI Thermal Zone 的 PDH 只读计数器：优先 `High Precision Temperature`，再兼容普通 `Temperature`；若固件没有热区，且 PawnIO 设备可用，则尝试 LHM 传感器。LHM CPU 组会在 `Computer::Open()` 前显式启用。AMD `Core (Tctl/Tdie)` / `Core (Tdie)` 优先作为 CPU 封装读数，传感器缺失时再平均有效 CPU 温度值。ACPI 与 PawnIO 都不可用时显示不可用，不会为了取得数字读取旧 WinRing0 或安装驱动。
+- CPU 温度优先使用已经可访问的 LHM 硬件传感器：AMD `Core (Tctl/Tdie)` / `Core (Tdie)` 优先作为 CPU 封装读数，传感器缺失时再平均有效 CPU 温度值。LHM CPU 组会在 `Computer::Open()` 前显式启用。硬件读数不可用时回退 Windows/ACPI Thermal Zone 的只读 PDH 计数器（优先 `High Precision Temperature`，再兼容普通 `Temperature`）。ACPI 与 PawnIO 都不可用时显示不可用；设置窗口区分 PawnIO 缺失和访问权限不足。
 - PDH 句柄、函数指针和计数器状态均经过检查；缺失的性能计数器会降级为不可用，不再向 `lodctr` 发起隐式系统修改。
 - 任务栏图标位置改为一次性移动，取消逐像素 `SetWindowPos` 动画；查找 Explorer 任务栏改为有限重试，避免 Explorer 重启时永久阻塞或造成高 CPU。
 - Explorer 的任务栏子窗口查找使用有界的 `EnumChildWindows` 类名枚举，兼容 Windows 11 的 XAML/Composition 中间层；当 `FindWindowEx` 无法返回实际任务列表句柄时，监控窗口仍能定位和刷新。
@@ -32,19 +32,37 @@
 
 ## 仍需明确的限制
 
-Ryzen 9 9955HX 的 LHM 传感器路径依赖单独安装的 PawnIO 软件和已经可访问的 `\\?\GLOBALROOT\Device\PawnIO` 设备。发布包不会捆绑或安装该驱动；未安装 PawnIO 时，TrayS 继续尝试 ACPI 温度路径并安全降级。当前这台 9955HX 机器没有公开 ACPI 热区且尚未安装 PawnIO，因此我们能确认问题原因和代码路径，但不能把真实硬件读数写成已验证结果。安装 PawnIO 后的温度输出仍需在该机实测。
+Ryzen 9 9955HX 的 LHM 传感器路径依赖单独安装的 PawnIO 软件和已经可访问的 `\\?\GLOBALROOT\Device\PawnIO` 设备。官方 PawnIO 2.2.0 的设备访问控制只允许 SYSTEM 和提升权限的管理员，因此“已安装驱动”不等同于“普通启动可读”。发布包不会捆绑或安装该驱动，也不会修改它的访问控制；普通权限下继续尝试 ACPI 温度路径。
 
-1.7.1 在本工作目录使用 VS 2022 Build Tools / MSVC v143 完成 x64 与 Win32 Release 构建，并运行静态兼容性校验和更新器多文件安装/回滚模拟。该测试不安装、不启动 PawnIO，也不加载 WinRing0。
+1.7.1 曾在本工作目录使用 VS 2022 Build Tools / MSVC v143 完成 x64 与 Win32 Release 构建，并运行静态兼容性校验和更新器多文件安装/回滚模拟。该测试不安装、不启动 PawnIO，也不加载 WinRing0。
 
-当前本机 CPU 为 AMD Ryzen 9 9955HX。Windows ACPI Thermal Zone 查询没有可用实例；PawnIO 未安装，因此未对该机的 LHM 读取结果作实测声明。AMD、Intel、多显卡和不同 Windows build 的完整实机回归仍需逐项完成：
+本机 AMD Ryzen 9 9955HX / TOPC YUNIK ITX WIFI D5 没有可用的 ACPI 温度实例。用户安装官方 PawnIO 2.2.0 后，在管理员 Windows PowerShell 中运行 LHM 0.9.6 诊断，连续 5 次读到有效的 Tctl/Tdie（52.375–55.125°C）、CCD1 和 CCD2 温度。普通权限打开同一设备返回 Win32 5。此结果确认本机的 LHM 传感器和权限边界，不代表其他机型已经认证。AMD、Intel、多显卡和不同 Windows build 的完整实机回归仍需逐项完成：
 
 | 平台/场景 | 需要确认的行为 |
 | --- | --- |
-| AMD Ryzen 5000/7000/8000 移动或桌面 | 默认不加载 LHM/WinRing0；先尝试 Windows/ACPI 平台温度，再读取 AMD ADL/NVIDIA NVAPI 显卡温度，失败时只显示不可用 |
-| Intel 近代桌面/移动 | 默认不加载 LHM；先尝试 Windows/ACPI 平台温度，PDH、显卡厂商 API 和硬盘监控仍应正常，显式启用 LHM 后再单独做驱动回归 |
+| AMD Ryzen 5000/7000/8000 移动或桌面 | PawnIO 已安装且管理员启动时验证 LHM 封装读数；普通启动验证 ACPI 回退和权限提示，失败时只显示不可用 |
+| Intel 近代桌面/移动 | 验证 LHM CPU Package、ACPI 回退、睡眠唤醒以及独立的显卡厂商 API；不恢复 WinRing0 |
 | 多 AMD/NVIDIA 适配器、混合显卡、虚拟显示适配器 | 只读枚举所有物理适配器，过滤不可用适配器并取最高有效 GPU 温度；不改变驱动状态，单个适配器失败不影响其他适配器 |
 | Windows 10 22H2、Windows 11 23H2/24H2 | 任务栏重启、多显示器、DPI 缩放、全屏窗口切换后窗口可恢复，Explorer CPU 不持续升高 |
 | 损坏/旧版 `TrayS.dat` | 程序使用默认配置启动，不因短文件或非法盘符崩溃 |
+
+## CPU 温度设置
+
+1. 安装 [官方签名的 PawnIO](https://github.com/namazso/PawnIO.Setup/releases)。TrayS 不会代为安装或捆绑驱动。
+2. 通过设置窗口的“退出”按钮关闭正在运行的 TrayS。
+3. 右键 `TrayS.exe`，选择“以管理员身份运行”，接受 Windows UAC 提示。
+4. 在设置中勾选“系统监视”和“显示温度”。9955HX 显示 CPU 的 Tctl/Tdie；不应把 CCD 温度的平均值当成整个 CPU 的封装温度。
+
+默认开机启动使用普通权限，因此下次登录后需要手动按上述方式启动，才能访问 PawnIO 硬件传感器。TrayS 保持 `asInvoker`，不自动提权或创建提升权限的计划任务。设置提示“请以管理员身份运行”时，重装 PawnIO 没有帮助；提示需要安装 PawnIO 时，再检查驱动是否存在。
+
+开发环境中可使用只读脚本区分驱动、LHM 和程序加载问题。以下命令要求管理员 Windows PowerShell，且已构建 x64 Release：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-cpu-temperature.ps1 -Platform x64 -SampleCount 5 -RequireTemperature
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\test-lhm-wrapper.ps1 -Platform x64 -SampleCount 5 -RequireCpuTemperature
+```
+
+`test-lhm-wrapper.ps1` 不带 `-RequireCpuTemperature` 时仅检查 DLL 加载，不能据此声称已读到真实 CPU 温度。
 
 ## 可重复的静态检查
 
@@ -84,7 +102,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-compatibili
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 ```
 
-默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.1_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.1_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
+默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.2_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.2_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
 
 如果本机没有 MSBuild，可以把 VS 2022 Build Tools 安装到仓库内的 `.buildtools` 目录。构建完成后，先运行 `tools\uninstall-build-tools.ps1`，让官方 Visual Studio Installer 完成卸载并清理该目录，再删除整个仓库目录；直接删除 `.buildtools` 会留下安装器注册信息和缓存，不应作为卸载步骤。
 

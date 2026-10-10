@@ -22,9 +22,9 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 本仓库来自上游项目 [cgbsmy/TrayS](https://github.com/cgbsmy/TrayS) 的 fork，由 [Rhongomiant1227/TrayS](https://github.com/Rhongomiant1227/TrayS) 继续维护。上游版本已经比较老，面对新一代 AMD 平台、混合显卡、Windows 11 Shell 和现代安全软件时，容易出现兼容性或告警问题；本 fork 的目标是保留 TrayS 的轻巧体验，同时把高风险、过时和容易误伤系统的路径收紧。
 
-当前维护版本：**TrayS 1.7.1**
+当前维护版本：**TrayS 1.7.2**
 
-1.7 修复自动更新时旧程序退出后没有替换新版本的问题；1.7.1 在更新时会一并暂存、校验并替换温度监控运行库，失败时恢复原有文件。
+1.7 修复自动更新时旧程序退出后没有替换新版本的问题；1.7.1 在更新时会一并暂存、校验并替换温度监控运行库，失败时恢复原有文件。1.7.2 补充 CPU 温度权限提示，优先使用 CPU 自身的封装传感器，并补齐源码构建所需的架构匹配程序集。
 
 旧版 1.5/1.6 不建议继续下载或使用：旧更新器可能在点击更新后退出，但没有完成新版本替换。1.5 用户请先手动安装 1.7，之后即可使用修复后的自动更新。
 
@@ -32,8 +32,9 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 ### 🧊 温度监控：优先安全降级
 
-- CPU 温度默认优先尝试 Windows/ACPI Thermal Zone 的只读 PDH 路径，支持 `High Precision Temperature` 和普通 `Temperature` 计数器。
-- 当固件没有公开 ACPI 热区时，1.7.1 会在 PawnIO 已安装并且设备可访问的情况下，使用 LibreHardwareMonitor 0.9.6 读取 AMD Zen 5（包括 Ryzen 9 9955HX）CPU 温度；AMD 的 Tctl/Tdie 封装读数优先于核心温度平均值。
+- 当 PawnIO 已安装、并以管理员身份运行 TrayS 时，CPU 温度优先使用 LibreHardwareMonitor 0.9.6 的硬件传感器；AMD 的 Tctl/Tdie 封装读数优先于核心温度平均值。
+- 普通权限启动、未安装 PawnIO 或硬件读数不可用时，回退到 Windows/ACPI Thermal Zone 的只读 PDH 路径，支持 `High Precision Temperature` 和普通 `Temperature` 计数器。热区可能对应主板或其他部件，因此有 CPU 自身读数时优先显示 CPU 自身读数。
+- 官方 PawnIO 驱动只允许 SYSTEM 和提升权限的管理员访问；安装驱动后仍须退出 TrayS，再右键 `TrayS.exe` 选择“以管理员身份运行”。设置窗口会明确提示权限不足，并提供温度帮助。
 - 为保持旧配置兼容，`显示温度` 默认关闭；需要在设置窗口勾选后才会创建温度采样路径和任务栏温度栏。
 - AMD Ryzen、Intel Core/Xeon 等平台只要固件向 Windows 暴露热区，就可以尝试读取；没有热区且没有可用 PawnIO 设备时显示不可用。
 - AMD 显卡使用 ADL 只读温度接口，NVIDIA 显卡使用 NVAPI 只读温度接口；逐卡枚举，混合 AMD+iGPU/NVIDIA、多 NVIDIA 卡或虚拟显示适配器时，单个设备失败不会拖垮其他设备。
@@ -68,8 +69,8 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 更新流程会从固定的 GitHub HTTPS API 查询最新 Release，严格选择当前版本和架构对应的资产，例如：
 
 ```text
-TrayS_1.7.1_x64.zip
-TrayS_1.7.1_x86.zip
+TrayS_1.7.2_x64.zip
+TrayS_1.7.2_x86.zip
 ```
 
 下载包在安装前会检查 Release digest、本地 SHA-256、版本资源和 PE 架构。程序会先退出，再由临时 helper 完成替换并重启；失败时恢复旧 EXE 和所有已替换的监控运行库。更新过程不打开浏览器，也不调用第三方下载器。
@@ -89,7 +90,7 @@ TrayS.dat             # 原有设置，保持旧结构兼容
 TrayS.update.dat      # 更新开关，默认不存在即视为开启
 ```
 
-如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`，不要为了绕过告警而关闭系统防护。1.7.1 包含 LHM 0.9.6 用户态程序集及依赖，但不包含 WinRing0、PawnIO 驱动、Ols 或 `.sys` 驱动文件。9955HX 等 Ryzen 温度传感器需要用户另行安装 PawnIO；TrayS 检测到设备后只会打开它读取数据，不会更改驱动或服务状态。随包附带第三方许可和源码链接。
+如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`，不要为了绕过告警而关闭系统防护。1.7.2 包含 LHM 0.9.6 用户态程序集及依赖，但不包含 WinRing0、PawnIO 驱动、Ols 或 `.sys` 驱动文件。9955HX 等 Ryzen 温度传感器需要用户另行安装 [官方 PawnIO](https://github.com/namazso/PawnIO.Setup/releases)，然后退出 TrayS，以管理员身份重新运行并勾选“显示温度”。普通开机启动不会自动取得管理员权限。TrayS 检测到设备后只会打开它读取数据，不会更改驱动或服务状态。随包附带第三方许可和源码链接。
 
 ## 🧰 从源码构建
 
@@ -127,13 +128,13 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
   -Platform x64 -Configuration Release `
-  -PackageName TrayS_1.7.1_x64 -Force
+  -PackageName TrayS_1.7.2_x64 -Force
 
 # x86
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
   -Platform Win32 -Configuration Release `
-  -PackageName TrayS_1.7.1_x86 -Force
+  -PackageName TrayS_1.7.2_x86 -Force
 ```
 
 标准包包含 TrayS EXE、LHM 0.9.6 的 x86/x64 对应运行程序集、必要依赖、兼容性说明和第三方许可。包内没有驱动文件；TrayS 只在已安装且可访问 PawnIO 时加载 LHM。构建脚本不会把 `.buildtools`、`Bin` 中间文件、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 驱动打进去。
@@ -145,7 +146,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 | 方向 | 改进 |
 | --- | --- |
 | 系统范围 | 明确 Windows 10/11 目标；删除旧系统映射和错误的 Any CPU 映射。 |
-| CPU 温度 | ACPI/PDH 只读热区、有限值检查、失败可用性降级；不再依赖 WinRing0 才能启动。 |
+| CPU 温度 | LHM 封装传感器优先、ACPI/PDH 回退、权限提示和有限值检查；不再依赖 WinRing0 才能启动。 |
 | AMD GPU | ADL 动态加载、活动适配器过滤、逐卡只读温度读取。 |
 | NVIDIA GPU | NVAPI 物理 GPU 数组按 API 最大值分配，逐卡读取并限制传感器范围。 |
 | 混合显卡 | AMD+iGPU/NVIDIA、多 NVIDIA、虚拟适配器和 DLL 缺失时互不拖累。 |
@@ -162,7 +163,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 🧪 测试边界
 
-1.7.1 的发布前检查包括 x64/x86 C++/CLI Release 构建、静态兼容性校验，以及模拟更新成功和多文件回滚。当前机器的 ACPI Thermal Zone 不提供温度实例，PawnIO 尚未安装，因此未在这台 9955HX 上实测 Zen 5 传感器输出；此场景需要安装 PawnIO 后验证。TrayS 不会替用户安装内核驱动。
+本机为 Ryzen 9 9955HX，主板 TOPC YUNIK ITX WIFI D5，ACPI Thermal Zone 没有可用温度实例。在用户手动安装官方 PawnIO 2.2.0、并运行管理员诊断后，LHM 0.9.6 连续 5 次返回有效的 Tctl/Tdie（52.375–55.125°C）以及两个 CCD 温度，证实本机硬件传感器可读。普通权限打开同一设备返回 Win32 5，明确属于访问权限问题。这里的实测结论仅适用于本机及对应读取路径。
 
 真实硬件回归仍需要在可恢复的隔离环境中逐项完成，尤其是：
 

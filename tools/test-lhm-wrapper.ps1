@@ -1,7 +1,12 @@
 [CmdletBinding()]
 param(
     [ValidateSet('x64', 'Win32')]
-    [string]$Platform = $(if ([IntPtr]::Size -eq 8) { 'x64' } else { 'Win32' })
+    [string]$Platform = $(if ([IntPtr]::Size -eq 8) { 'x64' } else { 'Win32' }),
+
+    [switch]$RequireCpuTemperature,
+
+    [ValidateRange(1, 60)]
+    [int]$SampleCount = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,22 +60,38 @@ if ($entryPoint -eq [IntPtr]::Zero) {
 }
 $reader = [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer(
     $entryPoint, [type][TraySLhmWrapperSmokeNative+GetTemperatureDelegate])
-[float]$cpu = -1.0
-[float]$gpu = -1.0
-[float]$disk = -1.0
-[float]$package = -1.0
-$reader.Invoke([ref]$cpu, [ref]$gpu, [IntPtr]::Zero, [ref]$disk, -1, [ref]$package)
 $errorPointer = [TraySLhmWrapperSmokeNative]::GetProcAddress($module, 'TraySGetHardwareMonitorError')
-$monitorError = ''
+$getError = $null
 if ($errorPointer -ne [IntPtr]::Zero) {
     $getError = [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer(
         $errorPointer, [type][TraySLhmWrapperSmokeNative+GetErrorDelegate])
-    $monitorError = [Runtime.InteropServices.Marshal]::PtrToStringUni($getError.Invoke())
 }
-if ($cpu -lt -1.0 -or $cpu -gt 255.0 -or $package -lt -1.0 -or $package -gt 255.0) {
-    throw "The wrapper returned an invalid CPU temperature ($cpu / $package)."
+$validCpuSamples = 0
+for ($sample = 1; $sample -le $SampleCount; $sample++) {
+    [float]$cpu = -1.0
+    [float]$gpu = -1.0
+    [float]$disk = -1.0
+    [float]$package = -1.0
+    $reader.Invoke([ref]$cpu, [ref]$gpu, [IntPtr]::Zero, [ref]$disk, -1, [ref]$package)
+    if ([single]::IsNaN($cpu) -or [single]::IsInfinity($cpu) -or
+        [single]::IsNaN($package) -or [single]::IsInfinity($package) -or
+        $cpu -lt -1.0 -or $cpu -gt 255.0 -or $package -lt -1.0 -or $package -gt 255.0) {
+        throw "The wrapper returned an invalid CPU temperature ($cpu / $package)."
+    }
+    if ($cpu -gt 0.0) { $validCpuSamples++ }
+    Write-Output ("Sample {0}: CPU={1} C, package={2} C ({3})." -f $sample, $cpu, $package, $Platform)
+    if ($getError) {
+        $monitorError = [Runtime.InteropServices.Marshal]::PtrToStringUni($getError.Invoke())
+        if ($monitorError) { Write-Output ("Monitor diagnostic: {0}" -f $monitorError) }
+    }
+    if ($sample -lt $SampleCount) { Start-Sleep -Milliseconds 1000 }
 }
 
-Write-Output ("PASS: {0} C++/CLI wrapper loaded LHM and returned CPU={1}, package={2}." -f $Platform, $cpu, $package)
-if ($monitorError) { Write-Output ("Monitor diagnostic: {0}" -f $monitorError) }
-Write-Output 'A zero reading is treated as unavailable by TrayS; ACPI remains the fallback when PawnIO is absent.'
+if ($RequireCpuTemperature -and $validCpuSamples -ne $SampleCount) {
+    throw "CPU sensor test failed: only $validCpuSamples of $SampleCount samples contained a usable CPU temperature. Check the installed PawnIO device and monitor diagnostics."
+}
+if ($validCpuSamples -eq $SampleCount) {
+    Write-Output ("PASS: {0} wrapper returned {1} usable CPU temperature samples." -f $Platform, $validCpuSamples)
+} else {
+    Write-Output ("PASS: {0} wrapper loaded; CPU temperature was unavailable. This is a loading test only, not a hardware-temperature validation." -f $Platform)
+}
