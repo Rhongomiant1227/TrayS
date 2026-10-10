@@ -7,9 +7,9 @@
 // for the current process architecture.
 #define TRAYS_VERSION_MAJOR 1
 #define TRAYS_VERSION_MINOR 7
-#define TRAYS_VERSION_PATCH 2
-#define TRAYS_VERSION_STRING L"1.7.2"
-#define TRAYS_VERSION_TAG L"v1.7.2"
+#define TRAYS_VERSION_PATCH 3
+#define TRAYS_VERSION_STRING L"1.7.3"
+#define TRAYS_VERSION_TAG L"v1.7.3"
 #define TRAYS_UPDATE_REPOSITORY L"Rhongomiant1227/TrayS"
 #define TRAYS_UPDATE_API_HOST L"api.github.com"
 #define TRAYS_UPDATE_API_PATH L"/repos/Rhongomiant1227/TrayS/releases/latest"

@@ -135,7 +135,7 @@ $apiHeader = Get-Content -LiteralPath (Join-Path $repoRoot 'OpenHardwareMonitorA
 $monitorImplementation = Get-Content -LiteralPath (Join-Path $repoRoot 'OpenHardwareMonitorApi/OpenHardwareMonitorImp.cpp') -Raw
 $visitorSource = Get-Content -LiteralPath (Join-Path $repoRoot 'OpenHardwareMonitorApi/UpdateVisitor.cpp') -Raw
 $trayHeader = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.h') -Raw
-$traySource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.cpp') -Raw
+$traySource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.cpp') -Raw -Encoding UTF8
 $updateHeaderPath = Join-Path $repoRoot 'TrayS/Update.h'
 $updateSourcePath = Join-Path $repoRoot 'TrayS/Update.cpp'
 $updateHeader = if (Test-Path -LiteralPath $updateHeaderPath) { Get-Content -LiteralPath $updateHeaderPath -Raw } else { '' }
@@ -179,7 +179,17 @@ Assert-Condition ($traySource -match 'IsPawnIoDeviceAvailable') 'PawnIO availabi
 Assert-Condition ($traySource -match 'CreateFileW\(L"[^\r\n]*PawnIO",\s*FILE_READ_DATA\s*\|\s*FILE_WRITE_DATA') 'PawnIO probe must match the data-access rights requested by LHM'
 Assert-Condition ($traySource -match 'bLhmDisabled\s*=\s*!IsPawnIoDeviceAvailable') 'LHM is not gated on an already-accessible PawnIO device'
 Assert-Condition ($traySource -match 'g_pawnIoProbeError == ERROR_ACCESS_DENIED' -and $traySource -match 'UpdateCpuTemperatureStatus') 'CPU temperature permission failures have no settings status'
-Assert-Condition ($resourceSource -match 'IDC_LABEL_CPU_TEMPERATURE_STATUS' -and $resourceSource -match 'IDC_BUTTON_CPU_TEMPERATURE_HELP') 'CPU temperature settings status/help controls are missing'
+Assert-Condition ($resourceSource -match 'IDC_LABEL_CPU_TEMPERATURE_STATUS' -and $resourceSource -match 'IDC_BUTTON_CPU_TEMPERATURE_HELP' -and $resourceSource -match 'IDC_BUTTON_CPU_TEMPERATURE_ENABLE') 'CPU temperature settings status/setup/help controls are missing'
+Assert-Condition ($traySource -match 'LaunchCpuSensorBrokerSetup' -and $traySource -match 'lpVerb = L"runas"') 'CPU sensor setup does not request an explicit one-time authorization'
+Assert-Condition ($traySource -match 'if \(g_cpuSensorBrokerSetupInProgress\)\s*return TRUE' -and $traySource -match 'g_cpuSensorBrokerSetupProcess = execute\.hProcess') 'CPU sensor setup can issue duplicate UAC prompts while the first setup is running'
+Assert-Condition ($traySource -match 'RunCpuSensorBrokerMode' -and $traySource -match 'if \(!IsProcessElevated\(\)\)') 'CPU sensor broker can run without an elevated token'
+Assert-Condition ($traySource -match 'TrayS-CpuSensor' -and $traySource -match 'ProgramW6432') 'CPU sensor broker is not installed under Program Files'
+Assert-Condition ($traySource -match 'HasCpuTemperatureDisplayRow\(hasAcpiTemperaturePath,[\s\S]*hasCpuSensorBrokerTask\)') 'Installed CPU sensor broker does not enable the CPU temperature display row'
+Assert-Condition ($traySource -match '/SC ONLOGON' -and $traySource -match '/RL HIGHEST' -and $traySource -match '/IT') 'CPU sensor broker logon task is not configured for the current interactive user'
+Assert-Condition ($traySource -match 'TASK_DONT_ADD_PRINCIPAL_ACE' -and $traySource -match 'SetSecurityDescriptor') 'CPU sensor task permissions are not restricted after registration'
+Assert-Condition ($traySource -match 'SetProtectedCpuSensorPathSecurity' -and $traySource -match 'O:BAD:P') 'CPU sensor binaries are not protected from user modification'
+Assert-Condition ($traySource -match 'g_runningCpuSensorBroker' -and $traySource -match 'CreateFileMappingW\(INVALID_HANDLE_VALUE') 'CPU sensor broker does not publish readings through its per-user mapping'
+Assert-Condition ($traySource -match 'L"--%s"' -and $traySource -match 'lstrcpyW\(sz, L"--"\)') 'Unavailable CPU temperature is displayed as a numeric zero'
 Assert-Condition ($monitorImplementation -match 'computer->IsCpuEnabled\s*=\s*true[\s\S]*computer->Open\(\)') 'LHM CPU hardware group is not enabled before Computer::Open'
 Assert-Condition ($monitorImplementation -match 'Core \(Tctl/Tdie\)' -and $monitorImplementation -match 'Core \(Tdie\)') 'AMD package temperature sensor preference is missing'
 Assert-Condition ($traySource -match 'InitializeSupportedWindowsVersion') 'Windows 10+ startup gate is missing'
@@ -187,7 +197,7 @@ Assert-Condition ($traySource -match 'dwMajorVersion\s*>=\s*10') 'Windows 10+ ve
 Assert-Condition ($traySource -match 'FindDescendantByClass') 'Shell descendant window discovery helper is missing'
 Assert-Condition ($traySource -match 'EnumChildWindows\(root') 'Shell discovery does not enumerate descendant windows'
 Assert-Condition ($resourceSource -match 'TrayS 1\.7') 'Maintained UI version label is missing'
-Assert-Condition ($resourceSource -match 'FILEVERSION 1,7,2,0' -and $resourceSource -match 'PRODUCTVERSION 1,7,2,0') 'Resource version is not 1.7.2'
+Assert-Condition ($resourceSource -match 'FILEVERSION 1,7,3,0' -and $resourceSource -match 'PRODUCTVERSION 1,7,3,0') 'Resource version is not 1.7.3'
 Assert-Condition ($resourceSource -match 'IDC_SYSLINK_COMPAT') 'Compatibility documentation link is missing'
 Assert-Condition ($resourceSource -match 'Windows 10/11') 'Windows 10/11 UI support note is missing'
 Assert-Condition ($resourceSource -notmatch '52[Pp]o[Jj]ie|52破解|Win8只能|Win7只能|Ver 1\.3\.9') 'Obsolete UI compatibility text remains'
@@ -207,13 +217,13 @@ Assert-Condition ($portableBuild -match 'llvm-mingw') 'Portable compatibility bu
 Assert-Condition ($portableBuild -match "'x86_64-w64-windows-gnu'") 'Portable compatibility build target is not x64 MinGW'
 Assert-Condition ($portableBuild -match "'-static'") 'Portable compatibility build does not statically link its C++ runtime'
 Assert-Condition ($portableBuild -match 'TrayS-compat-win11-x64\.exe' -or $portableBuild -match 'TrayS-compat-win11-\{0\}\.exe') 'Portable compatibility output name is missing'
-Assert-Condition ($portablePackage -match 'TrayS_1\.7\.2_compat_' -and $portablePackage -match 'FileMinorPart -ne 7' -and $portablePackage -match 'FileBuildPart -ne 2') 'Portable compatibility package version does not match the application version'
+Assert-Condition ($portablePackage -match 'TrayS_1\.7\.3_compat_' -and $portablePackage -match 'FileMinorPart -ne 7' -and $portablePackage -match 'FileBuildPart -ne 3') 'Portable compatibility package version does not match the application version'
 Assert-Condition ($functionSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'WinHTTP is not loaded from System32'
 Assert-Condition ($functionSource -match 'kPriceHttpTimeoutMs\s*=\s*5000' -and $functionSource -match 'winHttpSetTimeouts\(') 'WinHTTP timeout is not bounded to 5000 ms'
 Assert-Condition ($functionSource -notmatch '(?m)^\s*(?!//).*\bLoadLibrary\s*\(') 'Function.cpp contains an unqualified LoadLibrary call'
 Assert-Condition ($functionSource -match '#if defined\(TRAYS_ENABLE_LEGACY_SERVICE\)') 'Legacy service code is not compile-time gated'
-Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.7\.2"') 'Updater version identity is missing'
-Assert-Condition ($updateHeader -match 'TRAYS_VERSION_PATCH 2') 'Updater patch component does not match the application version'
+Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.7\.3"') 'Updater version identity is missing'
+Assert-Condition ($updateHeader -match 'TRAYS_VERSION_PATCH 3') 'Updater patch component does not match the application version'
 Assert-Condition ($updateHeader -match 'TRAYS_UPDATE_API_PATH') 'Updater GitHub API path is missing'
 Assert-Condition ($updateSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'Updater WinHTTP is not loaded from System32'
 Assert-Condition ($updateSource -match 'WINHTTP_FLAG_SECURE') 'Updater request is not HTTPS-only'

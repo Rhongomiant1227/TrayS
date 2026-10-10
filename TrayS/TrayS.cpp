@@ -14,8 +14,27 @@
 #include <cmath>
 #include <stdarg.h>
 #include <wchar.h>
+#include <sddl.h>
+#include <string>
+#include <vector>
+#include <taskschd.h>
+#include <shellapi.h>
 static void ClearNetworkSnapshotUnlocked();
 static void ClearProcessSnapshotUnlocked();
+static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError);
+static BOOL IsCpuSensorBrokerTaskInstalled();
+static BOOL LaunchCpuSensorBrokerSetup(HWND owner);
+
+struct CpuSensorBrokerSharedState
+{
+	volatile LONG ready;
+	volatile LONG temperatureC;
+	volatile LONG lastError;
+	volatile LONG sampleTick;
+};
+static BOOL g_runningCpuSensorBroker = FALSE;
+static BOOL g_cpuSensorBrokerSetupInProgress = FALSE;
+static HANDLE g_cpuSensorBrokerSetupProcess = NULL;
 
 // Network providers are normally trusted Windows components, but adapter
 // enumeration is an externally supplied, variable-sized data boundary. Keep
@@ -1666,6 +1685,17 @@ static DWORD TemperatureForDisplay(float value)
 int GetCpuTemp(DWORD Core)
 {
 	UNREFERENCED_PARAMETER(Core);
+	// PawnIO is not accessible to the normal tray UI token. A narrowly scoped,
+	// per-user broker runs from a protected Program Files directory and returns
+	// only the latest CPU temperature through a read/write mapping secured to
+	// this user's SID.
+	if (!g_runningCpuSensorBroker)
+	{
+		DWORD brokerTemperature = 0;
+		DWORD brokerError = ERROR_SUCCESS;
+		if (TryReadCpuSensorBrokerState(&brokerTemperature, &brokerError) && brokerTemperature != 0)
+			return brokerTemperature <= INT_MAX ? (int)brokerTemperature : 0;
+	}
 	// Prefer the CPU's own package sensor when the managed backend is available.
 	// ACPI thermal zones are a fallback and may describe a different component.
 	if (hOHMA && GetTemperature)
@@ -1711,7 +1741,7 @@ static BOOL IsPawnIoDeviceAvailable()
 	{
 		g_pawnIoProbeError = GetLastError();
 		if (g_pawnIoProbeError == ERROR_ACCESS_DENIED)
-			TraySRuntimeLog(L"CPU temperature: PawnIO access denied; exit TrayS and run it as administrator to enable hardware sensors.");
+			TraySRuntimeLog(L"CPU temperature: PawnIO access denied in the tray UI; authorize the protected sensor broker once in settings.");
 		else
 			TraySRuntimeLogFormat(L"CPU temperature: PawnIO device unavailable, error=%lu", g_pawnIoProbeError);
 		return FALSE;
@@ -1721,25 +1751,80 @@ static BOOL IsPawnIoDeviceAvailable()
 	return TRUE;
 }
 
+static BOOL HasCpuTemperatureDisplayRow(BOOL hasAcpiTemperaturePath,
+	BOOL hasLocalHardwareMonitor, BOOL hasCpuSensorBrokerTask)
+{
+	// bRing0 is a legacy layout flag. The protected broker counts as a CPU
+	// source even though the unelevated tray process cannot open PawnIO itself.
+	return hasAcpiTemperaturePath || hasLocalHardwareMonitor || hasCpuSensorBrokerTask;
+}
+
+static void RefreshCpuSensorBrokerSetupState(BOOL taskInstalled)
+{
+	if (!g_cpuSensorBrokerSetupInProgress)
+		return;
+	if (taskInstalled || (g_cpuSensorBrokerSetupProcess &&
+		WaitForSingleObject(g_cpuSensorBrokerSetupProcess, 0) != WAIT_TIMEOUT))
+	{
+		if (g_cpuSensorBrokerSetupProcess)
+		{
+			CloseHandle(g_cpuSensorBrokerSetupProcess);
+			g_cpuSensorBrokerSetupProcess = NULL;
+		}
+		g_cpuSensorBrokerSetupInProgress = FALSE;
+	}
+}
+
 static void UpdateCpuTemperatureStatus(HWND dialog)
 {
-	LPCWSTR status = L"CPU温度：未开启";
+	LPCWSTR status = L"CPU：未开启";
+	DWORD brokerTemperature = 0;
+	DWORD brokerError = ERROR_SUCCESS;
+	BOOL brokerTaskInstalled = IsCpuSensorBrokerTaskInstalled();
+	BOOL brokerHasFreshSample = TryReadCpuSensorBrokerState(&brokerTemperature, &brokerError);
+	BOOL hasAcpiTemperaturePath = HasAcpiTemperaturePath();
+	RefreshCpuSensorBrokerSetupState(brokerTaskInstalled);
+	if (TraySave.bMonitorTemperature && brokerTaskInstalled && !bRing0)
+	{
+		bRing0 = TRUE;
+		SetWH();
+		AdjustWindowPos();
+	}
 	AcquireSRWLockShared(&g_temperatureLock);
 	if (TraySave.bMonitorTemperature)
 	{
-		if (hOHMA && GetTemperature)
-			status = L"CPU温度：已加载硬件监控";
-		else if (HasAcpiTemperaturePath())
-			status = L"CPU温度：使用 Windows 热区";
+		if (brokerHasFreshSample && brokerTemperature != 0)
+			status = L"CPU：硬件已读";
+		else if (brokerTaskInstalled && brokerHasFreshSample &&
+			(brokerError == ERROR_FILE_NOT_FOUND || brokerError == ERROR_PATH_NOT_FOUND))
+			status = L"CPU：需安装 PawnIO";
+		else if (brokerTaskInstalled && brokerHasFreshSample && brokerError == ERROR_ACCESS_DENIED)
+			status = L"CPU：后台权限异常";
+		else if (brokerTaskInstalled && brokerHasFreshSample)
+			status = L"CPU：后台无读数";
+		else if (brokerTaskInstalled)
+			status = L"CPU：后台启动中";
+		else if (g_cpuSensorBrokerSetupInProgress)
+			status = L"CPU：正在授权";
+		else if (hOHMA && GetTemperature)
+			status = L"CPU：硬件已读";
+		else if (hasAcpiTemperaturePath)
+			status = L"CPU：Windows 热区";
 		else if (g_pawnIoProbeError == ERROR_ACCESS_DENIED)
-			status = L"CPU温度：请以管理员身份运行";
+			status = L"CPU：需要一次授权";
 		else if (g_pawnIoProbeError == ERROR_FILE_NOT_FOUND || g_pawnIoProbeError == ERROR_PATH_NOT_FOUND)
-			status = L"CPU温度：需安装 PawnIO";
+			status = L"CPU：需安装 PawnIO";
 		else
-			status = L"CPU温度：不可用，请查看帮助";
+			status = L"CPU：暂无可用读数";
 	}
 	ReleaseSRWLockShared(&g_temperatureLock);
 	SetDlgItemTextW(dialog, IDC_LABEL_CPU_TEMPERATURE_STATUS, status);
+	SetDlgItemTextW(dialog, IDC_BUTTON_CPU_TEMPERATURE_ENABLE,
+		brokerTaskInstalled ? L"已授权" : (g_cpuSensorBrokerSetupInProgress ? L"授权中..." : L"授权一次"));
+	EnableWindow(GetDlgItem(dialog, IDC_BUTTON_CPU_TEMPERATURE_ENABLE),
+		!brokerTaskInstalled && !g_cpuSensorBrokerSetupInProgress);
+	if (g_cpuSensorBrokerSetupInProgress)
+		SetTimer(dialog, 4, 1000, NULL);
 }
 
 static void FreeTemperatureDLLUnlocked();
@@ -1784,7 +1869,9 @@ void LoadTemperatureDLL()
 	// bRing0 is retained as the legacy two-row temperature-layout flag. It now
 	// means that either the safe ACPI path or the available managed sensor path
 	// can provide a CPU/package sample; it never means a driver was installed.
-	bRing0 = hasAcpiTemperaturePath || (hOHMA != NULL && GetTemperature != NULL);
+	const BOOL hasCpuSensorBrokerTask = IsCpuSensorBrokerTaskInstalled();
+	bRing0 = HasCpuTemperatureDisplayRow(hasAcpiTemperaturePath,
+		hOHMA != NULL && GetTemperature != NULL, hasCpuSensorBrokerTask);
 #ifdef _WIN64
 	hNVDLL = LoadSystemLibrarySafe(L"nvapi64.dll");
 #else
@@ -1858,8 +1945,6 @@ void LoadTemperatureDLL()
 			hATIDLL = NULL;
 		}
 	}
-	if (!hOHMA && !hNVDLL && !hATIDLL && !hasAcpiTemperaturePath)
-		bRing0 = FALSE;
 	ReleaseSRWLockExclusive(&g_temperatureLock);
 }
 ///////////////////////////////////释放温度DLL
@@ -2084,6 +2169,526 @@ static BOOL InitializeSupportedWindowsVersion()
 	return rovi.dwMajorVersion >= 10;
 }
 
+static BOOL GetCurrentUserSidString(std::wstring* sidString)
+{
+	if (!sidString)
+		return FALSE;
+	sidString->clear();
+	HANDLE token = NULL;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		return FALSE;
+	DWORD required = 0;
+	GetTokenInformation(token, TokenUser, NULL, 0, &required);
+	if (required == 0)
+	{
+		CloseHandle(token);
+		return FALSE;
+	}
+	std::vector<BYTE> tokenUserBuffer(required);
+	BOOL gotUser = GetTokenInformation(token, TokenUser, tokenUserBuffer.data(), required, &required);
+	CloseHandle(token);
+	if (!gotUser)
+		return FALSE;
+	LPWSTR sidText = NULL;
+	if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(tokenUserBuffer.data())->User.Sid, &sidText))
+		return FALSE;
+	*sidString = sidText;
+	LocalFree(sidText);
+	return TRUE;
+}
+
+static std::wstring QuoteWindowsArgument(const std::wstring& argument)
+{
+	std::wstring quoted(1, L'"');
+	SIZE_T backslashes = 0;
+	for (WCHAR ch : argument)
+	{
+		if (ch == L'\\')
+		{
+			++backslashes;
+			continue;
+		}
+		if (ch == L'"')
+		{
+			quoted.append(backslashes * 2 + 1, L'\\');
+			quoted.push_back(L'"');
+			backslashes = 0;
+			continue;
+		}
+		quoted.append(backslashes, L'\\');
+		backslashes = 0;
+		quoted.push_back(ch);
+	}
+	quoted.append(backslashes * 2, L'\\');
+	quoted.push_back(L'"');
+	return quoted;
+}
+
+static BOOL GetCpuSensorBrokerNames(const std::wstring& sid, std::wstring* mapName,
+	std::wstring* mutexName, std::wstring* taskName, std::wstring* installDirectory)
+{
+	if (sid.empty())
+		return FALSE;
+#ifdef _WIN64
+	const WCHAR* architecture = L"x64";
+#else
+	const WCHAR* architecture = L"x86";
+#endif
+	if (mapName)
+		*mapName = L"Local\\TrayS.CpuSensor." + sid;
+	if (mutexName)
+		*mutexName = L"Local\\TrayS.CpuSensorBroker." + sid + L"." + architecture;
+	if (taskName)
+		*taskName = L"TrayS-CpuSensor-" + sid + L"-" + architecture;
+	if (installDirectory)
+	{
+		WCHAR programFiles[32768] = {};
+		DWORD length = GetEnvironmentVariableW(L"ProgramW6432", programFiles, ARRAYSIZE(programFiles));
+		if (length == 0 || length >= ARRAYSIZE(programFiles))
+			length = GetEnvironmentVariableW(L"ProgramFiles", programFiles, ARRAYSIZE(programFiles));
+		if (length == 0 || length >= ARRAYSIZE(programFiles))
+			return FALSE;
+		*installDirectory = programFiles;
+		*installDirectory += L"\\TrayS-CpuSensor\\";
+		*installDirectory += architecture;
+		*installDirectory += L"\\";
+		*installDirectory += sid;
+	}
+	return TRUE;
+}
+
+static BOOL GetSchtasksPath(std::wstring* path)
+{
+	if (!path)
+		return FALSE;
+	WCHAR systemDirectory[MAX_PATH] = {};
+	UINT length = GetSystemDirectoryW(systemDirectory, ARRAYSIZE(systemDirectory));
+	if (length == 0 || length >= ARRAYSIZE(systemDirectory))
+		return FALSE;
+	*path = systemDirectory;
+	*path += L"\\schtasks.exe";
+	return TRUE;
+}
+
+static BOOL RunSchtasksCommand(const std::wstring& arguments, DWORD timeoutMs = 15000)
+{
+	std::wstring schtasksPath;
+	if (!GetSchtasksPath(&schtasksPath))
+		return FALSE;
+	std::wstring commandLine = QuoteWindowsArgument(schtasksPath) + L" " + arguments;
+	STARTUPINFOW startup{};
+	startup.cb = sizeof(startup);
+	startup.dwFlags = STARTF_USESHOWWINDOW;
+	startup.wShowWindow = SW_HIDE;
+	PROCESS_INFORMATION process{};
+	if (!CreateProcessW(schtasksPath.c_str(), &commandLine[0], NULL, NULL, FALSE,
+		CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, NULL, NULL, &startup, &process))
+		return FALSE;
+	CloseHandle(process.hThread);
+	DWORD waitResult = WaitForSingleObject(process.hProcess, timeoutMs);
+	DWORD exitCode = ERROR_TIMEOUT;
+	if (waitResult == WAIT_OBJECT_0)
+		GetExitCodeProcess(process.hProcess, &exitCode);
+	else if (waitResult == WAIT_TIMEOUT)
+		TerminateProcess(process.hProcess, ERROR_TIMEOUT);
+	CloseHandle(process.hProcess);
+	return waitResult == WAIT_OBJECT_0 && exitCode == ERROR_SUCCESS;
+}
+
+static BOOL IsCpuSensorBrokerTaskInstalled()
+{
+	std::wstring sid, mapName, mutexName, taskName;
+	if (!GetCurrentUserSidString(&sid) ||
+		!GetCpuSensorBrokerNames(sid, &mapName, &mutexName, &taskName, NULL))
+		return FALSE;
+	return RunSchtasksCommand(L"/Query /TN " + QuoteWindowsArgument(taskName));
+}
+
+static BOOL SetProtectedCpuSensorPathSecurity(const std::wstring& path,
+	const std::wstring& sid, BOOL directory, BOOL sharedDirectory)
+{
+	std::wstring sddl = L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;";
+	if (sharedDirectory)
+		sddl += L"GRGX;;;AU)";
+	else
+		sddl += L"GRGX;;;" + sid + L")";
+	if (!directory)
+	{
+		sddl = L"O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;" + sid + L")";
+	}
+	PSECURITY_DESCRIPTOR descriptor = NULL;
+	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1,
+		&descriptor, NULL))
+		return FALSE;
+	BOOL secured = SetFileSecurityW(path.c_str(), OWNER_SECURITY_INFORMATION |
+		DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, descriptor);
+	LocalFree(descriptor);
+	return secured;
+}
+
+static BOOL EnableTakeOwnershipPrivilege()
+{
+	HANDLE token = NULL;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+		return FALSE;
+	TOKEN_PRIVILEGES privileges{};
+	privileges.PrivilegeCount = 1;
+	if (!LookupPrivilegeValueW(NULL, SE_TAKE_OWNERSHIP_NAME, &privileges.Privileges[0].Luid))
+	{
+		CloseHandle(token);
+		return FALSE;
+	}
+	privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	SetLastError(ERROR_SUCCESS);
+	BOOL adjusted = AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), NULL, NULL);
+	DWORD error = GetLastError();
+	CloseHandle(token);
+	return adjusted && error == ERROR_SUCCESS;
+}
+
+static BOOL EnsureProtectedCpuSensorDirectory(const std::wstring& path,
+	const std::wstring& sid, BOOL sharedDirectory)
+{
+	DWORD attributes = GetFileAttributesW(path.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+	{
+		if (!CreateDirectoryW(path.c_str(), NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
+			return FALSE;
+		attributes = GetFileAttributesW(path.c_str());
+	}
+	if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+		(attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+		return FALSE;
+	return SetProtectedCpuSensorPathSecurity(path, sid, TRUE, sharedDirectory);
+}
+
+static BOOL IsProcessElevated()
+{
+	HANDLE token = NULL;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		return FALSE;
+	TOKEN_ELEVATION elevation{};
+	DWORD returned = 0;
+	BOOL elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returned) &&
+		elevation.TokenIsElevated != 0;
+	CloseHandle(token);
+	return elevated;
+}
+
+static BOOL RestrictCpuSensorTaskSecurity(const std::wstring& taskName, const std::wstring& sid)
+{
+	// The Task Scheduler type library is consumed through COM interfaces; keep
+	// the class identifier local so native test builds do not need an SDK import
+	// library just to resolve the COM class constant.
+	static const CLSID taskSchedulerClsid = {
+		0x0f87369f, 0xa4e5, 0x4cfc, { 0xbd, 0x3e, 0x73, 0xe6, 0x15, 0x45, 0x72, 0xdd }
+	};
+	HRESULT initResult = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE)
+		return FALSE;
+	BOOL mustUninitialize = SUCCEEDED(initResult);
+	ITaskService* service = NULL;
+	ITaskFolder* root = NULL;
+	IRegisteredTask* task = NULL;
+	HRESULT hr = CoCreateInstance(taskSchedulerClsid, NULL, CLSCTX_INPROC_SERVER,
+		__uuidof(ITaskService), reinterpret_cast<void**>(&service));
+	if (SUCCEEDED(hr))
+	{
+		VARIANT empty;
+		VariantInit(&empty);
+		hr = service->Connect(empty, empty, empty, empty);
+		if (SUCCEEDED(hr))
+		{
+			BSTR rootPath = SysAllocString(L"\\");
+			hr = rootPath ? service->GetFolder(rootPath, &root) : E_OUTOFMEMORY;
+			if (rootPath) SysFreeString(rootPath);
+		}
+		if (SUCCEEDED(hr))
+		{
+			std::wstring qualifiedTaskName = L"\\" + taskName;
+			BSTR taskPath = SysAllocString(qualifiedTaskName.c_str());
+			hr = taskPath ? root->GetTask(taskPath, &task) : E_OUTOFMEMORY;
+			if (taskPath) SysFreeString(taskPath);
+		}
+		if (SUCCEEDED(hr))
+		{
+			std::wstring sddl = L"O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGX;;;" + sid + L")";
+			BSTR taskSddl = SysAllocString(sddl.c_str());
+			hr = taskSddl ? task->SetSecurityDescriptor(taskSddl, TASK_DONT_ADD_PRINCIPAL_ACE) : E_OUTOFMEMORY;
+			if (taskSddl) SysFreeString(taskSddl);
+		}
+	}
+	if (task) task->Release();
+	if (root) root->Release();
+	if (service) service->Release();
+	if (mustUninitialize) CoUninitialize();
+	return SUCCEEDED(hr);
+}
+
+static BOOL InstallCpuSensorBroker(const std::wstring& expectedSid)
+{
+	std::wstring currentSid;
+	if (!IsProcessElevated() || !GetCurrentUserSidString(&currentSid) || currentSid != expectedSid)
+	{
+		MessageBoxW(NULL,
+			L"硬件温度后台程序必须以当前 Windows 管理员账户完成一次安装。未作任何更改。",
+			L"TrayS CPU 温度", MB_OK | MB_ICONWARNING);
+		return FALSE;
+	}
+	if (!EnableTakeOwnershipPrivilege())
+	{
+		MessageBoxW(NULL, L"无法安全设置后台程序目录权限。未创建开机任务。",
+			L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
+		return FALSE;
+	}
+	std::wstring mapName, mutexName, taskName, installDirectory;
+	if (!GetCpuSensorBrokerNames(currentSid, &mapName, &mutexName, &taskName, &installDirectory))
+		return FALSE;
+	const SIZE_T separator = installDirectory.find_last_of(L"\\/");
+	if (separator == std::wstring::npos)
+		return FALSE;
+	std::wstring architectureDirectory = installDirectory.substr(0, separator);
+	const SIZE_T parentSeparator = architectureDirectory.find_last_of(L"\\/");
+	if (parentSeparator == std::wstring::npos)
+		return FALSE;
+	std::wstring rootDirectory = architectureDirectory.substr(0, parentSeparator);
+	if (!EnsureProtectedCpuSensorDirectory(rootDirectory, currentSid, TRUE) ||
+		!EnsureProtectedCpuSensorDirectory(architectureDirectory, currentSid, TRUE) ||
+		!EnsureProtectedCpuSensorDirectory(installDirectory, currentSid, FALSE))
+	{
+		MessageBoxW(NULL, L"无法建立只允许管理员修改的后台程序目录。未创建开机任务。",
+			L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
+		return FALSE;
+	}
+	static const WCHAR* runtimeFiles[] = {
+		L"TrayS.exe", L"OpenHardwareMonitorApi.dll", L"LibreHardwareMonitorLib.dll",
+		L"HidSharp.dll", L"DiskInfoToolkit.dll", L"RAMSPDToolkit-NDD.dll", L"BlackSharp.Core.dll",
+		L"Microsoft.Bcl.AsyncInterfaces.dll", L"Microsoft.Bcl.HashCode.dll", L"System.Buffers.dll",
+		L"System.Memory.dll", L"System.Numerics.Vectors.dll", L"System.Runtime.CompilerServices.Unsafe.dll",
+		L"System.Security.AccessControl.dll", L"System.Security.Principal.Windows.dll",
+		L"System.Threading.AccessControl.dll", L"System.Threading.Tasks.Extensions.dll"
+	};
+	for (const WCHAR* fileName : runtimeFiles)
+	{
+		WCHAR sourcePath[32768] = {};
+		DWORD sourceLength = GetModuleFileNameW(NULL, sourcePath, ARRAYSIZE(sourcePath));
+		if (sourceLength == 0 || sourceLength >= ARRAYSIZE(sourcePath))
+			return FALSE;
+		WCHAR* slash = wcsrchr(sourcePath, L'\\');
+		if (!slash)
+			return FALSE;
+		lstrcpyW(slash + 1, fileName);
+		std::wstring destinationPath = installDirectory + L"\\" + fileName;
+		DWORD destinationAttributes = GetFileAttributesW(destinationPath.c_str());
+		if (destinationAttributes != INVALID_FILE_ATTRIBUTES &&
+			(destinationAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+			return FALSE;
+		if (!CopyFileW(sourcePath, destinationPath.c_str(), FALSE) ||
+			!SetProtectedCpuSensorPathSecurity(destinationPath, currentSid, FALSE, FALSE))
+		{
+			MessageBoxW(NULL,
+				L"复制或保护 CPU 温度后台文件失败。开机任务尚未创建；请确认发布包完整后重试。",
+				L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
+			return FALSE;
+		}
+	}
+	std::wstring installedExe = installDirectory + L"\\TrayS.exe";
+	std::wstring action = QuoteWindowsArgument(installedExe) + L" --cpu-sensor-broker";
+	std::wstring createArguments = L"/Create /F /TN " + QuoteWindowsArgument(taskName) +
+		L" /SC ONLOGON /TR " + QuoteWindowsArgument(action) + L" /RL HIGHEST /IT";
+	if (!RunSchtasksCommand(createArguments) || !RestrictCpuSensorTaskSecurity(taskName, currentSid))
+	{
+		RunSchtasksCommand(L"/Delete /F /TN " + QuoteWindowsArgument(taskName));
+		MessageBoxW(NULL,
+			L"无法安全注册硬件温度后台任务。未保留开机任务；请查看任务计划程序状态后重试。",
+			L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
+		return FALSE;
+	}
+	if (!RunSchtasksCommand(L"/Run /TN " + QuoteWindowsArgument(taskName)))
+	{
+		RunSchtasksCommand(L"/Delete /F /TN " + QuoteWindowsArgument(taskName));
+		MessageBoxW(NULL,
+			L"后台任务已创建，但无法立即启动；任务已回滚。请重试，或检查 Windows 任务计划程序。",
+			L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static BOOL LaunchCpuSensorBrokerSetup(HWND owner)
+{
+	// The user can click repeatedly while the UAC installer is still copying
+	// files. Keep one child process and one consent prompt in flight at a time.
+	if (g_cpuSensorBrokerSetupInProgress)
+		return TRUE;
+	if (IsCpuSensorBrokerTaskInstalled())
+		return TRUE;
+	std::wstring sid;
+	if (!GetCurrentUserSidString(&sid))
+	{
+		MessageBoxW(owner, L"无法识别当前 Windows 用户，不能安全设置温度后台程序。",
+			L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
+		return FALSE;
+	}
+	if (MessageBoxW(owner,
+		L"TrayS 将请求一次管理员授权，把仅负责读取 CPU 温度的后台程序安装到受保护的 Program Files 目录，并设置为当前用户登录时启动。请使用当前 Windows 管理员账户批准；使用另一个管理员账户会被拒绝。\n\n托盘界面仍以普通权限运行；后续登录启动后台程序时不会再弹出 UAC。TrayS 不会安装或修改 PawnIO 驱动。继续吗？",
+		L"启用 CPU 硬件温度", MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) != IDYES)
+		return FALSE;
+	WCHAR executablePath[32768] = {};
+	DWORD pathLength = GetModuleFileNameW(NULL, executablePath, ARRAYSIZE(executablePath));
+	if (pathLength == 0 || pathLength >= ARRAYSIZE(executablePath))
+		return FALSE;
+	SHELLEXECUTEINFOW execute{};
+	execute.cbSize = sizeof(execute);
+	execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+	execute.lpVerb = L"runas";
+	execute.lpFile = executablePath;
+	std::wstring parameters = L"--install-cpu-sensor " + QuoteWindowsArgument(sid);
+	execute.lpParameters = parameters.c_str();
+	execute.nShow = SW_HIDE;
+	if (!ShellExecuteExW(&execute))
+	{
+		DWORD error = GetLastError();
+		if (error != ERROR_CANCELLED)
+			MessageBoxW(owner, L"无法启动一次性授权设置程序。", L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
+		return FALSE;
+	}
+	if (!execute.hProcess)
+	{
+		MessageBoxW(owner, L"无法跟踪一次性授权设置程序。", L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
+		return FALSE;
+	}
+	g_cpuSensorBrokerSetupProcess = execute.hProcess;
+	g_cpuSensorBrokerSetupInProgress = TRUE;
+	EnableWindow(GetDlgItem(owner, IDC_BUTTON_CPU_TEMPERATURE_ENABLE), FALSE);
+	SetDlgItemTextW(owner, IDC_BUTTON_CPU_TEMPERATURE_ENABLE, L"授权中...");
+	SetTimer(owner, 4, 1000, NULL);
+	return TRUE;
+}
+
+static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError)
+{
+	if (temperatureC) *temperatureC = 0;
+	if (lastError) *lastError = ERROR_SUCCESS;
+	std::wstring sid, mapName, mutexName;
+	if (!GetCurrentUserSidString(&sid) ||
+		!GetCpuSensorBrokerNames(sid, &mapName, &mutexName, NULL, NULL))
+		return FALSE;
+	HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapName.c_str());
+	if (!mapping)
+		return FALSE;
+	CpuSensorBrokerSharedState* state = static_cast<CpuSensorBrokerSharedState*>(
+		MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(CpuSensorBrokerSharedState)));
+	if (!state)
+	{
+		CloseHandle(mapping);
+		return FALSE;
+	}
+	LONG ready = InterlockedCompareExchange(const_cast<LONG*>(&state->ready), 0, 0);
+	LONG tick = InterlockedCompareExchange(const_cast<LONG*>(&state->sampleTick), 0, 0);
+	LONG temperature = InterlockedCompareExchange(const_cast<LONG*>(&state->temperatureC), 0, 0);
+	LONG error = InterlockedCompareExchange(const_cast<LONG*>(&state->lastError), 0, 0);
+	DWORD age = GetTickCount() - static_cast<DWORD>(tick);
+	BOOL fresh = ready != 0 && tick != 0 && age <= 5000;
+	if (fresh)
+	{
+		if (temperatureC && temperature > 0)
+			*temperatureC = static_cast<DWORD>(temperature);
+		if (lastError && error >= 0)
+			*lastError = static_cast<DWORD>(error);
+	}
+	UnmapViewOfFile(state);
+	CloseHandle(mapping);
+	return fresh;
+}
+
+static int RunCpuSensorBrokerMode()
+{
+	if (!IsProcessElevated())
+		return ERROR_ELEVATION_REQUIRED;
+	std::wstring sid, mapName, mutexName;
+	if (!GetCurrentUserSidString(&sid) ||
+		!GetCpuSensorBrokerNames(sid, &mapName, &mutexName, NULL, NULL))
+		return ERROR_INVALID_SID;
+	std::wstring sddl = L"D:P(A;;GA;;;" + sid + L")(A;;GA;;;SY)(A;;GA;;;BA)";
+	PSECURITY_DESCRIPTOR descriptor = NULL;
+	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1,
+		&descriptor, NULL))
+		return static_cast<int>(GetLastError());
+	SECURITY_ATTRIBUTES security{};
+	security.nLength = sizeof(security);
+	security.lpSecurityDescriptor = descriptor;
+	HANDLE mutex = CreateMutexW(&security, TRUE, mutexName.c_str());
+	if (!mutex)
+	{
+		DWORD error = GetLastError();
+		LocalFree(descriptor);
+		return static_cast<int>(error);
+	}
+	if (GetLastError() == ERROR_ALREADY_EXISTS)
+	{
+		CloseHandle(mutex);
+		LocalFree(descriptor);
+		return ERROR_SUCCESS;
+	}
+	HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE,
+		0, sizeof(CpuSensorBrokerSharedState), mapName.c_str());
+	DWORD mapError = GetLastError();
+	LocalFree(descriptor);
+	if (!mapping)
+	{
+		CloseHandle(mutex);
+		return static_cast<int>(GetLastError());
+	}
+	CpuSensorBrokerSharedState* state = static_cast<CpuSensorBrokerSharedState*>(
+		MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(CpuSensorBrokerSharedState)));
+	if (!state)
+	{
+		DWORD error = GetLastError();
+		CloseHandle(mapping);
+		CloseHandle(mutex);
+		return static_cast<int>(error);
+	}
+	if (mapError == ERROR_ALREADY_EXISTS)
+		ZeroMemory(state, sizeof(*state));
+	TraySave.bMonitorTemperature = TRUE;
+	g_runningCpuSensorBroker = TRUE;
+	LoadTemperatureDLL();
+	TraySRuntimeLog(L"CPU sensor broker started; tray UI remains unelevated.");
+	for (;;)
+	{
+		int temperature = GetCpuTemp(1);
+		InterlockedExchange(&state->temperatureC, temperature > 0 ? temperature : 0);
+		InterlockedExchange(&state->lastError, static_cast<LONG>(g_pawnIoProbeError));
+		InterlockedExchange(&state->sampleTick, static_cast<LONG>(GetTickCount()));
+		InterlockedExchange(&state->ready, 1);
+		Sleep(1000);
+	}
+}
+
+static BOOL DispatchCpuSensorCommandLine(int* exitCode)
+{
+	if (!exitCode)
+		return FALSE;
+	int argumentCount = 0;
+	LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+	if (!arguments)
+		return FALSE;
+	BOOL dispatched = FALSE;
+	if (argumentCount >= 2 && lstrcmpiW(arguments[1], L"--cpu-sensor-broker") == 0)
+	{
+		*exitCode = RunCpuSensorBrokerMode();
+		dispatched = TRUE;
+	}
+	else if (argumentCount >= 3 && lstrcmpiW(arguments[1], L"--install-cpu-sensor") == 0)
+	{
+		*exitCode = InstallCpuSensorBroker(arguments[2]) ? ERROR_SUCCESS : ERROR_INSTALL_FAILURE;
+		dispatched = TRUE;
+	}
+	LocalFree(arguments);
+	return dispatched;
+}
+
 #ifndef _DEBUG
 extern "C" void WinMainCRTStartup()
 {
@@ -2155,6 +2760,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	}
 */
 #endif
+	int specialCommandExitCode = 0;
+	if (DispatchCpuSensorCommandLine(&specialCommandExitCode))
+		ExitProcess(static_cast<UINT>(specialCommandExitCode));
 	if (!InitializeSupportedWindowsVersion())
 	{
 		MessageBoxW(NULL,
@@ -5987,38 +6595,35 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 					}
 					if (bRing0)
 					{
-						if ((hATIDLL != NULL || hNVDLL != NULL )&& TrayData->iTemperature1 == 0 && TraySave.bMonitorDisk&&!hOHMA&&!HasAcpiTemperaturePath())
-							TrayData->iTemperature1 = TrayData->disktime;
-						if (TrayData->iTemperature1 <= TraySave.dNumValues[2])
+						if (TrayData->iTemperature1 == 0)
+							rgb = TraySave.cMonitorColor[2];
+						else if (TrayData->iTemperature1 <= TraySave.dNumValues[2])
 							rgb = TraySave.cMonitorColor[4];
 						else if (TrayData->iTemperature1 <= TraySave.dNumValues[3])
 							rgb = TraySave.cMonitorColor[5];
 						else
 							rgb = TraySave.cMonitorColor[6];
 						SetTextColor(mdc, rgb);
-						if ((hATIDLL != NULL || hNVDLL != NULL )&& TrayData->iTemperature1 == TrayData->disktime && TraySave.bMonitorDisk&&!hOHMA&&!HasAcpiTemperaturePath())
-						{
-							if (TraySave.iMonitorSimple == 0)
-							{
-								DrawShadowText(mdc, TraySave.szDiskName, lstrlen(TraySave.szDiskName), &crc, DT_LEFT | DT_VCENTER | DT_SINGLELINE, bColor, bShadow);
-								wsprintf(sz, L"%.2d%s", TrayData->iTemperature1, TraySave.szUsageMEMUnit);
-							}
-							else if (TraySave.iMonitorSimple == 1)
-								wsprintf(sz, L"%.2d%%", TrayData->iTemperature1);
-							else
-								wsprintf(sz, L"%.2d", TrayData->iTemperature1);
-						}
-						else
+						if (TrayData->iTemperature1 == 0)
 						{
 							if (TraySave.iMonitorSimple == 1)
-								wsprintf(sz, L"%.2d℃", TrayData->iTemperature1);
+								lstrcpyW(sz, L"--℃");
 							else if (TraySave.iMonitorSimple == 2)
-								wsprintf(sz, L"%.2d", TrayData->iTemperature1);
+								lstrcpyW(sz, L"--");
 							else
 							{
 								DrawShadowText(mdc, TraySave.szTemperatureCPU, lstrlen(TraySave.szTemperatureCPU), &crc, DT_LEFT | DT_VCENTER | DT_SINGLELINE, bColor, bShadow);
-								wsprintf(sz, L"%.2d%s", TrayData->iTemperature1, TraySave.szTemperatureCPUUnit);
+								wsprintf(sz, L"--%s", TraySave.szTemperatureCPUUnit);
 							}
+						}
+						else if (TraySave.iMonitorSimple == 1)
+							wsprintf(sz, L"%.2d℃", TrayData->iTemperature1);
+						else if (TraySave.iMonitorSimple == 2)
+							wsprintf(sz, L"%.2d", TrayData->iTemperature1);
+						else
+						{
+							DrawShadowText(mdc, TraySave.szTemperatureCPU, lstrlen(TraySave.szTemperatureCPU), &crc, DT_LEFT | DT_VCENTER | DT_SINGLELINE, bColor, bShadow);
+							wsprintf(sz, L"%.2d%s", TrayData->iTemperature1, TraySave.szTemperatureCPUUnit);
 						}
 						DrawShadowText(mdc, sz, lstrlen(sz), &crc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE, bColor, bShadow);
 					}
@@ -6864,9 +7469,19 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			KillTimer(hDlg, wParam);
 			WriteReg();
 		}
+		else if (wParam == 4)
+		{
+			KillTimer(hDlg, wParam);
+			UpdateCpuTemperatureStatus(hDlg);
+		}
 		break;
 	case WM_COMMAND:
-		if (LOWORD(wParam) == IDC_BUTTON_CPU_TEMPERATURE_HELP && HIWORD(wParam) == BN_CLICKED)
+		if (LOWORD(wParam) == IDC_BUTTON_CPU_TEMPERATURE_ENABLE && HIWORD(wParam) == BN_CLICKED)
+		{
+			if (LaunchCpuSensorBrokerSetup(hDlg))
+				UpdateCpuTemperatureStatus(hDlg);
+		}
+		else if (LOWORD(wParam) == IDC_BUTTON_CPU_TEMPERATURE_HELP && HIWORD(wParam) == BN_CLICKED)
 		{
 			(void)pShellExecute(hDlg, L"open", L"https://github.com/Rhongomiant1227/TrayS/blob/master/COMPATIBILITY.md#cpu-温度设置", NULL, NULL, SW_SHOW);
 		}

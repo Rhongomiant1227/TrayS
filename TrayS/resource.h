@@ -161,6 +161,7 @@
 #define IDC_BUTTON_OFFSET_RESET         1110
 #define IDC_LABEL_CPU_TEMPERATURE_STATUS 1111
 #define IDC_BUTTON_CPU_TEMPERATURE_HELP  1112
+#define IDC_BUTTON_CPU_TEMPERATURE_ENABLE 1113
 #define ID_32800                        32800
 #define IDC_SELECT_ALL                  33000
 #define IDC_DISK_ALL                    33200

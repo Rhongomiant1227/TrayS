@@ -288,7 +288,7 @@ static void TestCpuTemperatureSources()
     UpdateCpuTemperatureStatus(hSetting);
     wchar_t status[128]{};
     GetDlgItemTextW(hSetting, IDC_LABEL_CPU_TEMPERATURE_STATUS, status, 128);
-    Check(wcsstr(status, L"管理员") != NULL, "PawnIO access denied has no administrator guidance");
+    Check(wcsstr(status, L"一次授权") != NULL, "PawnIO access denied has no one-time broker guidance");
     g_pawnIoProbeError = ERROR_FILE_NOT_FOUND;
     UpdateCpuTemperatureStatus(hSetting);
     GetDlgItemTextW(hSetting, IDC_LABEL_CPU_TEMPERATURE_STATUS, status, 128);
@@ -298,6 +298,32 @@ static void TestCpuTemperatureSources()
     hSetting = NULL;
     g_pawnIoProbeError = ERROR_SUCCESS;
     thermalProbeAttempted = FALSE;
+}
+
+static void TestCpuTemperatureLayoutAvailability()
+{
+	Check(!HasCpuTemperatureDisplayRow(FALSE, FALSE, FALSE),
+		"Unavailable CPU sources unexpectedly reserve a CPU temperature row");
+	Check(HasCpuTemperatureDisplayRow(FALSE, FALSE, TRUE),
+		"Installed CPU sensor broker does not reserve a row for its readings");
+	Check(HasCpuTemperatureDisplayRow(TRUE, FALSE, FALSE),
+		"ACPI CPU temperature source does not reserve a row");
+	Check(HasCpuTemperatureDisplayRow(FALSE, TRUE, FALSE),
+		"Local hardware monitor does not reserve a CPU temperature row");
+}
+
+static void TestCpuSensorAuthorizationIsSerialized()
+{
+	HANDLE inFlightSetup = CreateEventW(NULL, TRUE, FALSE, NULL);
+	Check(inFlightSetup != NULL, "Cannot create authorization state fixture");
+	g_cpuSensorBrokerSetupProcess = inFlightSetup;
+	g_cpuSensorBrokerSetupInProgress = TRUE;
+	Check(LaunchCpuSensorBrokerSetup(NULL), "An already-running setup was treated as a failure");
+	Check(g_cpuSensorBrokerSetupProcess == inFlightSetup && g_cpuSensorBrokerSetupInProgress,
+		"A second authorization request replaced the in-flight setup process");
+	g_cpuSensorBrokerSetupInProgress = FALSE;
+	g_cpuSensorBrokerSetupProcess = NULL;
+	CloseHandle(inFlightSetup);
 }
 
 int main()
@@ -324,7 +350,9 @@ int main()
         { "Independent calibration sliders", TestSliders },
         { "Legacy taskbar on negative monitor origin", TestLegacyLayout },
         { "Composition and fullscreen vertical offsets", TestPopupLayout },
-        { "CPU package priority, ACPI fallback and permission guidance", TestCpuTemperatureSources }
+        { "CPU package priority, ACPI fallback and permission guidance", TestCpuTemperatureSources },
+        { "CPU sensor broker keeps the temperature row visible", TestCpuTemperatureLayoutAvailability },
+        { "CPU sensor authorization cannot spawn duplicate prompts", TestCpuSensorAuthorizationIsSerialized }
     };
     for (const auto& test : tests)
     {

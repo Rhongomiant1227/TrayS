@@ -22,7 +22,7 @@ if ([string]::IsNullOrWhiteSpace($PackageName)) {
     # Keep the product name in the archive so an extracted release is
     # immediately recognizable instead of looking like an anonymous legacy
     # `_x64_ALL_...` build.
-    $PackageName = "TrayS_1.7.2_${platformLabel}"
+    $PackageName = "TrayS_1.7.3_${platformLabel}"
 }
 
 if ($PackageName -eq '.' -or $PackageName -eq '..' -or
@@ -277,7 +277,7 @@ $manifestLines = @(
     ("Built: {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')),
     'LibreHardwareMonitor 0.9.6 is included; TrayS loads it only when the PawnIO device is already installed and accessible.',
     'TrayS does not install, start, or bundle PawnIO or any kernel driver.',
-    'CPU hardware sensors require the official PawnIO driver and running TrayS as administrator; ACPI remains the fallback for normal launches.',
+    'CPU hardware sensors require the official PawnIO driver and the one-time, per-user CPU sensor broker authorization; the tray UI remains unelevated and the broker starts at logon without another UAC prompt.',
     'This package was produced from the current working tree.'
 )
 $manifestLines | Set-Content -LiteralPath (Join-Path $packageRoot 'PACKAGE.txt') -Encoding UTF8

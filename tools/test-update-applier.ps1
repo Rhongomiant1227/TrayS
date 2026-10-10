@@ -13,8 +13,8 @@ if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
     throw "Build TrayS first or pass -CandidatePath: $CandidatePath"
 }
 $candidateVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($CandidatePath).FileVersion
-if (-not $candidateVersion.StartsWith('1.7.2.')) {
-    throw "The test candidate must have version 1.7.2; found $candidateVersion"
+if (-not $candidateVersion.StartsWith('1.7.3.')) {
+    throw "The test candidate must have version 1.7.3; found $candidateVersion"
 }
 $candidateBytes = [IO.File]::ReadAllBytes($CandidatePath)
 if ($candidateBytes.Length -lt 64 -or [BitConverter]::ToUInt16($candidateBytes, 0) -ne 0x5a4d) {
@@ -93,7 +93,7 @@ function Invoke-UpdaterScenario([string]$Scenario, [string]$ZipPath, [string]$Ta
                 ('$zip=' + (ConvertTo-PowerShellLiteral $ZipPath)),
                 ('$target=' + (ConvertTo-PowerShellLiteral $TargetPath)),
                 ('$expectedHash=' + (ConvertTo-PowerShellLiteral $Hash)),
-                ('$expectedVersion=' + (ConvertTo-PowerShellLiteral '1.7.2') + "; `$expectedVersion=`$expectedVersion.TrimStart('v')"),
+                ('$expectedVersion=' + (ConvertTo-PowerShellLiteral '1.7.3') + "; `$expectedVersion=`$expectedVersion.TrimStart('v')"),
                 ('$parentPid=' + [string]$ParentProcessId)
             )
             $scriptLines[$index] = ($dynamicAssignments -join "`r`n") + "`r`n" + $scriptLines[$index]
