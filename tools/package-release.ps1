@@ -26,7 +26,7 @@ if ([string]::IsNullOrWhiteSpace($PackageName)) {
     # Keep the product name in the archive so an extracted release is
     # immediately recognizable instead of looking like an anonymous legacy
     # `_x64_ALL_...` build.
-    $PackageName = "TrayS_1.6.1_${platformLabel}"
+    $PackageName = "TrayS_1.7.0_${platformLabel}"
 }
 
 if ($PackageName -eq '.' -or $PackageName -eq '..' -or

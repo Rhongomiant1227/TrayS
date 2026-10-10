@@ -1,6 +1,6 @@
 # TrayS 维护交接说明
 
-这份文件面向后续维护 agent。当前仓库是 `Rhongomiant1227/TrayS` fork 的 Windows 10/11 维护版，当前产品版本为 **1.6.1**。目标是保留 TrayS 的任务栏监控功能，同时让默认发布包在 AMD、Intel、多显卡和较新的 Windows Shell 上安全降级。
+这份文件面向后续维护 agent。当前仓库是 `Rhongomiant1227/TrayS` fork 的 Windows 10/11 维护版，当前产品版本为 **1.7.0**。目标是保留 TrayS 的任务栏监控功能，同时让默认发布包在 AMD、Intel、多显卡和较新的 Windows Shell 上安全降级。
 
 ## 当前基线
 
@@ -10,7 +10,7 @@
 - 设置 UI：链接指向本 fork 和 `COMPATIBILITY.md`，不再保留旧论坛链接；风格选项对应 `ACCENT_DISABLED`、透明渐变、DWM 模糊和亚克力。
 - 更新机制：设置中提供“自动获取更新”（默认开启）和“检查更新”按钮。更新只访问 GitHub HTTPS API/Release，按 `TrayS_<版本>_<架构>.zip` 精确选择资产，并要求 SHA-256、版本和 PE 架构全部匹配；下载、校验和替换在独立线程/临时 PowerShell helper 中完成，不打开浏览器、不加载驱动。更新失败保留旧 EXE。
 - ARM 边界：当前只维护 Win32/x64。Windows on ARM64 可尝试 x64 模拟运行，但不等同于原生 ARM64；不要添加把 ARM64 错误映射到 x64 的 solution 配置，也不要把现有包重命名成 ARM64。原生 ARM64 需要重新处理 C++/CLI、传感器程序集和 AMD/NVIDIA 厂商 DLL，并经过真实设备回归。
-- 版本信息：资源文件 `TrayS/TrayS.rc` 中为 `1.6.1.0`。`TRAYSAVE` 原始结构保持兼容，当前数据版本仍为 `116`，不要仅因改 UI 就递增它。
+- 版本信息：资源文件 `TrayS/TrayS.rc` 中为 `1.7.0.0`。`TRAYSAVE` 原始结构保持兼容，当前数据版本仍为 `116`，不要仅因改 UI 就递增它。
 
 ## 温度与显卡安全边界
 
@@ -32,7 +32,7 @@ Build Tools 保存在仓库目录 `.buildtools`，用户要求在明确说“卸
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate-compatibility.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -Platform x64 -Configuration Release -PackageName TrayS_1.6.1_x64 -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -Platform x64 -Configuration Release -PackageName TrayS_1.7.0_x64 -Force
 ```
 
 当前机器没有 MSBuild 时，使用项目内 LLVM-MinGW 生成原生 Win32 兼容性验证 EXE：
@@ -47,7 +47,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-portable-compa
 
 兼容性 Release 同时附带 `MEMORY_AUDIT.md`，记录动态模块、句柄、GDI/USER 对象和运行压力检查的边界。
 
-Release 资产名称必须包含产品名和架构，例如 `TrayS_1.6.1_x64.zip`、`TrayS_1.6.1_x86.zip`；不要恢复旧的 `_x64_ALL_...` 匿名命名。
+Release 资产名称必须包含产品名和架构，例如 `TrayS_1.7.0_x64.zip`、`TrayS_1.7.0_x86.zip`；不要恢复旧的 `_x64_ALL_...` 匿名命名。
 
 历史维护记录显示，Release|x64 和 Release|Win32 曾在带有 VS 2022 Build Tools 的环境中完成构建，链接结果为 0 个警告、0 个错误；静态检查也已通过。本工作目录未安装 MSBuild，但已使用便携式 LLVM-MinGW 生成并实际运行 `dist\TrayS-compat-win11-x64\TrayS-compat-win11-x64.exe`。在 Windows 11 build 22631 上，窗口枚举确认监控窗口挂在 `Shell_TrayWnd` 任务栏树中；临时开启温度配置后，运行进程共享数据的 CPU 温度为 28°C。真实硬件回归仍需在隔离环境中验证 AMD、Intel、混合 AMD/NVIDIA 和多显卡场景，不能把这台机器的结果扩展成所有硬件的认证。
 
