@@ -72,16 +72,31 @@ Assert-Condition ($solutionText -notmatch '\|ARM(?:64)?\s*=') 'Unsupported ARM/A
 Assert-Condition ($solutionText -notmatch 'Any CPU') 'Unsupported Any CPU solution configuration found'
 Assert-Condition ($solutionText -match 'ProjectSection\(ProjectDependencies\)') 'TrayS project dependency is missing'
 
-$assemblyPath = Join-Path $repoRoot 'OpenHardwareMonitorApi/LibreHardwareMonitorLib.dll'
-Assert-Condition (Test-Path -LiteralPath $assemblyPath) 'LibreHardwareMonitorLib.dll is missing'
+$lhmRoot = Join-Path $repoRoot 'OpenHardwareMonitorApi/ThirdParty/LibreHardwareMonitor-0.9.6'
+$assemblyPath = Join-Path $lhmRoot 'x64/LibreHardwareMonitorLib.dll'
+Assert-Condition (Test-Path -LiteralPath $assemblyPath) 'x64 LibreHardwareMonitorLib.dll 0.9.6 is missing'
+foreach ($architecture in @(
+    [pscustomobject]@{ Name = 'x64'; Machine = 0x8664 },
+    [pscustomobject]@{ Name = 'x86'; Machine = 0x014c }
+)) {
+    $architecturePath = Join-Path $lhmRoot (Join-Path $architecture.Name 'LibreHardwareMonitorLib.dll')
+    Assert-Condition (Test-Path -LiteralPath $architecturePath) "$($architecture.Name) LibreHardwareMonitorLib.dll is missing"
+    if (Test-Path -LiteralPath $architecturePath) {
+        $architectureBytes = [IO.File]::ReadAllBytes($architecturePath)
+        $architecturePeOffset = [BitConverter]::ToInt32($architectureBytes, 0x3c)
+        $architectureMachine = [BitConverter]::ToUInt16($architectureBytes, $architecturePeOffset + 4)
+        Assert-Condition ($architectureMachine -eq $architecture.Machine) ("Unexpected {0} LHM PE machine: 0x{1:x4}" -f $architecture.Name, $architectureMachine)
+        $architectureVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($architecturePath).FileVersion
+        Assert-Condition ($architectureVersion -eq '0.9.6.0') "$($architecture.Name) LibreHardwareMonitorLib is not version 0.9.6: $architectureVersion"
+    }
+}
 if (Test-Path -LiteralPath $assemblyPath) {
     $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($assemblyPath).FileVersion
-    Assert-Condition ([version]$version -ge [version]'0.9.4.0') "LibreHardwareMonitorLib is too old: $version"
+    Assert-Condition ($version -eq '0.9.6.0') "LibreHardwareMonitorLib must be version 0.9.6: $version"
     $bytes = [IO.File]::ReadAllBytes($assemblyPath)
     $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
     $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
-    # The transitional net472 assembly must remain IL/Win32-compatible.
-    Assert-Condition ($machine -eq 0x014c) ('Unexpected PE machine: 0x{0:x4}' -f $machine)
+    Assert-Condition ($machine -eq 0x8664) ('Unexpected x64 LHM PE machine: 0x{0:x4}' -f $machine)
 
     $assembly = [Reflection.Assembly]::LoadFrom($assemblyPath)
     $required = @{
@@ -89,6 +104,7 @@ if (Test-Path -LiteralPath $assemblyPath) {
         'LibreHardwareMonitor.Hardware.IComputer' = @('Hardware', 'IsCpuEnabled', 'IsGpuEnabled', 'IsStorageEnabled', 'IsMotherboardEnabled')
         'LibreHardwareMonitor.Hardware.IHardware' = @('HardwareType', 'Sensors', 'SubHardware', 'Name', 'Update')
         'LibreHardwareMonitor.Hardware.ISensor' = @('Value', 'Name', 'SensorType')
+        'LibreHardwareMonitor.PawnIo.PawnIo' = @('IsInstalled', 'Version')
     }
     foreach ($typeName in $required.Keys) {
         $type = $assembly.GetType($typeName, $false)
@@ -104,11 +120,11 @@ if (Test-Path -LiteralPath $assemblyPath) {
     Assert-Condition ($null -ne $hardwareType -and [Enum]::GetNames($hardwareType) -contains 'GpuIntel') 'LibreHardwareMonitorLib has no Intel GPU type'
 }
 
-$hidSharpPath = Join-Path $repoRoot 'OpenHardwareMonitorApi/HidSharp.dll'
-Assert-Condition (Test-Path -LiteralPath $hidSharpPath) 'HidSharp.dll is missing (required by LibreHardwareMonitorLib 0.9.4)'
+$hidSharpPath = Join-Path $lhmRoot 'HidSharp.dll'
+Assert-Condition (Test-Path -LiteralPath $hidSharpPath) 'HidSharp.dll is missing (required by LibreHardwareMonitorLib 0.9.6)'
 if (Test-Path -LiteralPath $hidSharpPath) {
     $hidVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($hidSharpPath).FileVersion
-    Assert-Condition ([version]$hidVersion -ge [version]'2.1.0.0') "HidSharp is too old: $hidVersion"
+    Assert-Condition ([version]$hidVersion -ge [version]'2.6.4.0') "HidSharp is too old: $hidVersion"
     $hidBytes = [IO.File]::ReadAllBytes($hidSharpPath)
     $hidPeOffset = [BitConverter]::ToInt32($hidBytes, 0x3c)
     $hidMachine = [BitConverter]::ToUInt16($hidBytes, $hidPeOffset + 4)
@@ -135,13 +151,14 @@ $portablePackage = if (Test-Path -LiteralPath $portablePackagePath) { Get-Conten
 $readmePath = Join-Path $repoRoot 'README.md'
 $readmeSource = if (Test-Path -LiteralPath $readmePath) { Get-Content -LiteralPath $readmePath -Raw } else { '' }
 Assert-Condition ($apiHeader -match '\*fCpu\s*=\s*-1\.0f') 'GetTemperature does not initialize CPU output'
+Assert-Condition ($apiHeader -match 'cpu\s*=\s*m_pMonitor->CpuTemperature\(\)') 'C ABI does not use the selected CPU/package temperature'
 Assert-Condition ($apiHeader -match 'static_cast<size_t>\(iHDD\)\s*<\s*temperatures\.size\(\)') 'HDD index is not bounds checked'
 Assert-Condition ($apiHeader -match 'try\s*\{[\s\S]*m_pMonitor->GetHardwareInfo\(\)') 'GetTemperature does not contain the managed update boundary'
 Assert-Condition ($apiHeader -match 'catch\s*\(\.\.\.\)') 'GetTemperature does not contain a C ABI catch-all'
 Assert-Condition ($monitorImplementation -match 'static bool TryGetLoadValue') 'Load sensor values are not validated independently'
 Assert-Condition ($monitorImplementation -match 'case HardwareType::GpuIntel:' -and $monitorImplementation -match 'return m_gpu_intel_temperature;' -and $monitorImplementation -match 'return m_gpu_intel_usage;') 'Intel GPU sensor fallback is missing'
 Assert-Condition ($monitorImplementation -match 'value < 0\.0f \|\| value > 100\.0f') 'Load sensor range is not limited to 0..100'
-Assert-Condition ($monitorImplementation -match 'std::isfinite\(sum\).*std::isfinite\(temperature\)' -or $monitorImplementation -match 'std::isfinite\(temperature\)') 'Temperature aggregation is not checked for finite output'
+Assert-Condition ($monitorImplementation -match 'std::isfinite\(sum\).*std::isfinite\(average\)' -or $monitorImplementation -match 'std::isfinite\(preferredTemperature\)') 'Temperature aggregation is not checked for finite output'
 Assert-Condition ($monitorImplementation -match 'catch \(System::Exception\^ e\)') 'Individual managed hardware nodes are not exception-isolated'
 Assert-Condition ($visitorSource -match 'auto subHardwareList = hardware->SubHardware') 'SubHardware is not captured within a protected boundary'
 Assert-Condition ($visitorSource -match 'subHardware->Accept\(this\)') 'SubHardware visitor traversal is missing'
@@ -158,14 +175,16 @@ Assert-Condition ($traySource -match 'offset \+ 1\s*<\s*pathChars') 'ACPI wildca
 Assert-Condition ($traySource -match 'int acpiTemperature\s*=\s*GetAcpiCpuTemperature\(\)') 'GetCpuTemp does not prefer the safe ACPI path'
 Assert-Condition ($traySource -match 'TrayData->iTemperature1\s*=\s*GetCpuTemp\(1\)') 'Monitoring loop does not sample CPU temperature without LHM'
 Assert-Condition ($traySource -match 'bRing0\s*') 'Managed temperature availability flag is missing'
-Assert-Condition ($traySource -match 'TRAYS_ENABLE_LHM') 'LHM safety opt-in guard is missing'
-Assert-Condition ($traySource -match 'bLhmDisabled\s*=\s*!IsLhmOptIn') 'LHM is not disabled by default'
+Assert-Condition ($traySource -match 'IsPawnIoDeviceAvailable') 'PawnIO availability probe is missing'
+Assert-Condition ($traySource -match 'bLhmDisabled\s*=\s*!IsPawnIoDeviceAvailable') 'LHM is not gated on an already-accessible PawnIO device'
+Assert-Condition ($monitorImplementation -match 'computer->IsCpuEnabled\s*=\s*true[\s\S]*computer->Open\(\)') 'LHM CPU hardware group is not enabled before Computer::Open'
+Assert-Condition ($monitorImplementation -match 'Core \(Tctl/Tdie\)' -and $monitorImplementation -match 'Core \(Tdie\)') 'AMD package temperature sensor preference is missing'
 Assert-Condition ($traySource -match 'InitializeSupportedWindowsVersion') 'Windows 10+ startup gate is missing'
 Assert-Condition ($traySource -match 'dwMajorVersion\s*>=\s*10') 'Windows 10+ version comparison is missing'
 Assert-Condition ($traySource -match 'FindDescendantByClass') 'Shell descendant window discovery helper is missing'
 Assert-Condition ($traySource -match 'EnumChildWindows\(root') 'Shell discovery does not enumerate descendant windows'
 Assert-Condition ($resourceSource -match 'TrayS 1\.7') 'Maintained UI version label is missing'
-Assert-Condition ($resourceSource -match 'FILEVERSION 1,7,0,0' -and $resourceSource -match 'PRODUCTVERSION 1,7,0,0') 'Resource version is not 1.7.0'
+Assert-Condition ($resourceSource -match 'FILEVERSION 1,7,1,0' -and $resourceSource -match 'PRODUCTVERSION 1,7,1,0') 'Resource version is not 1.7.1'
 Assert-Condition ($resourceSource -match 'IDC_SYSLINK_COMPAT') 'Compatibility documentation link is missing'
 Assert-Condition ($resourceSource -match 'Windows 10/11') 'Windows 10/11 UI support note is missing'
 Assert-Condition ($resourceSource -notmatch '52[Pp]o[Jj]ie|52破解|Win8只能|Win7只能|Ver 1\.3\.9') 'Obsolete UI compatibility text remains'
@@ -185,12 +204,12 @@ Assert-Condition ($portableBuild -match 'llvm-mingw') 'Portable compatibility bu
 Assert-Condition ($portableBuild -match "'x86_64-w64-windows-gnu'") 'Portable compatibility build target is not x64 MinGW'
 Assert-Condition ($portableBuild -match "'-static'") 'Portable compatibility build does not statically link its C++ runtime'
 Assert-Condition ($portableBuild -match 'TrayS-compat-win11-x64\.exe' -or $portableBuild -match 'TrayS-compat-win11-\{0\}\.exe') 'Portable compatibility output name is missing'
-Assert-Condition ($portablePackage -match 'TrayS_1\.7\.0_' -and $portablePackage -match 'FileMinorPart -ne 7' -and $portablePackage -match 'FileBuildPart -ne 0') 'Portable release package version does not match the application version'
+Assert-Condition ($portablePackage -match 'TrayS_1\.7\.1_compat_' -and $portablePackage -match 'FileMinorPart -ne 7' -and $portablePackage -match 'FileBuildPart -ne 1') 'Portable compatibility package version does not match the application version'
 Assert-Condition ($functionSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'WinHTTP is not loaded from System32'
 Assert-Condition ($functionSource -match 'kPriceHttpTimeoutMs\s*=\s*5000' -and $functionSource -match 'winHttpSetTimeouts\(') 'WinHTTP timeout is not bounded to 5000 ms'
 Assert-Condition ($functionSource -notmatch '(?m)^\s*(?!//).*\bLoadLibrary\s*\(') 'Function.cpp contains an unqualified LoadLibrary call'
 Assert-Condition ($functionSource -match '#if defined\(TRAYS_ENABLE_LEGACY_SERVICE\)') 'Legacy service code is not compile-time gated'
-Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.7\.0"') 'Updater version identity is missing'
+Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.7\.1"') 'Updater version identity is missing'
 Assert-Condition ($updateHeader -match 'TRAYS_UPDATE_API_PATH') 'Updater GitHub API path is missing'
 Assert-Condition ($updateSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'Updater WinHTTP is not loaded from System32'
 Assert-Condition ($updateSource -match 'WINHTTP_FLAG_SECURE') 'Updater request is not HTTPS-only'
@@ -202,9 +221,9 @@ Assert-Condition ($updateSource -match '\.WaitForExit\(120000\)') 'Updater does 
 $extractDirectoryIndex = $updateSource.IndexOf('New-Item -ItemType Directory -Path $extract', [StringComparison]::Ordinal)
 $expandArchiveIndex = $updateSource.IndexOf('Expand-Archive -LiteralPath $zip', [StringComparison]::Ordinal)
 Assert-Condition ($extractDirectoryIndex -ge 0 -and $expandArchiveIndex -gt $extractDirectoryIndex) 'Updater must create the extraction directory before expanding the package'
-Assert-Condition ($updateSource -match '\$replacementAttempted=\$true; Move-Item' -and $updateSource -match 'Copy-Item -LiteralPath \$backup -Destination \$target -Force') 'Updater replacement does not attempt rollback after a failed install'
-Assert-Condition ($updateSource -match 'installed executable failed verification' -and $updateSource -match 'rollback failed:') 'Updater does not verify the installed file and report rollback failures'
-Assert-Condition ($updateSource -match 'TraySUpdateNative.*MessageBox' -and $updateSource -match '\$failureState' -and $updateSource -match 'rollback failed:') 'Updater failure path does not explain the recovery state to the user'
+Assert-Condition ($updateSource -match '\$replacementAttempted=\$true; foreach \(\$name in \$payloadNames\)' -and $updateSource -match 'Copy-Item -LiteralPath \$backup -Destination \$installed -Force') 'Updater replacement does not stage and roll back the complete runtime payload'
+Assert-Condition ($updateSource -match 'Installed update file failed verification' -and $updateSource -match 'rollback failed for') 'Updater does not verify every installed file and report rollback failures'
+Assert-Condition ($updateSource -match 'TraySUpdateNative.*MessageBox' -and $updateSource -match '\$failureState' -and $updateSource -match 'rollback failed for') 'Updater failure path does not explain the recovery state to the user'
 Assert-Condition ($updateSource -match 'GrantUpdateHelperReadAccess' -and $updateSource -match 'PROTECTED_DACL_SECURITY_INFORMATION') 'Elevated updater cannot safely read temporary files created by another user account'
 Assert-Condition ($updateSource -notmatch 'TryRunTraySUpdateCommandLine|--trays-apply-update' -and $traySource -notmatch 'TryRunTraySUpdateCommandLine') 'Updater must not relaunch the executable that it is about to replace'
 $updaterScriptBuilder = New-Object Text.StringBuilder

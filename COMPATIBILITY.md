@@ -14,12 +14,12 @@
 
 ## 本次维护内容
 
-- 硬件监控包装层升级到 `LibreHardwareMonitorLib` 0.9.4（`net472`/I386 IL 程序集，可供 Win32 与 x64 的 C++/CLI 包装层引用），并随附它运行时需要的 `HidSharp` 2.1.0 程序集。该版本保留了旧包装层使用的 `Computer`、`IComputer`、`IHardware` 和 `ISensor` API，并包含较新的 Ryzen/AMD 识别修复。
+- 硬件监控包装层升级到 `LibreHardwareMonitorLib` 0.9.6（`net472`，分别使用 x86 与 x64 程序集），并包含运行依赖。该版本识别 Zen 5，支持 Ryzen 9 9955HX 的 CPU 温度传感器。
 - `GetTemperature` 的所有输出先初始化为 `-1`；硬件初始化失败、传感器 `Nullable<float>` 没有值、硬盘索引超出范围时均返回缺省值，不再解引用空指针或越界迭代器。
 - 托管硬件遍历按计算机、硬件集合和单个子硬件节点分层捕获异常；导出的 `GetTemperature` 也将更新、映射读取和数值转换置于同一 C ABI 异常边界。AMD 固件切换、设备热插拔或某个传感器提供者短暂故障时，其余硬件仍可继续刷新，失败字段显示为不可用。
 - 温度读数仅接受有限的 `-50–255°C` 值；GPU 与硬盘负载另行限定为 `0–100%`，温度平均值和导出前数值均会再次检查。这样可阻止传感器返回的 NaN、无穷或异常哨兵值进入 TrayS 的整数显示字段。
-- 禁止温度 DLL 失败后自动加载 WinRing0。TrayS 已移除自己的 WinRing0 模块句柄、驱动文件、旧 import library 和 AMD/Intel 固定 PCI/MSR 回退路径；NVIDIA/AMD 显卡厂商 API 仍作为可选补充路径。由于 LHM 0.9.4 自身仍内嵌 WinRing0，安全默认值是在所有 CPU 平台都不加载 LHM，因此不会因 TrayS 启动而安装或打开该内核驱动；只有用户明确设置 `TRAYS_ENABLE_LHM=1` 才会启用 LHM（旧的 `TRAYS_ENABLE_LHM_AMD=1` 仅作为 AMD 测试兼容别名），这表示用户自行承担驱动兼容性风险。
-- 默认 CPU 温度路径改为 Windows/ACPI Thermal Zone 的 PDH 只读计数器：优先读取 `High Precision Temperature`，再兼容普通 `Temperature`，遍历可用热区并以最高的合理值作为平台/封装温度。该路径由 Windows 与固件提供，不读 MSR、不读 PCI 配置空间、不安装 WinRing0/PawnIO，也不调用 AMD/Intel 调频或电压接口；因此 AMD Ryzen、Intel Core/Xeon 以及没有厂商专用传感器的机器都可以安全尝试。某些固件不公开热区时会返回不可用，不会阻止 GPU、磁盘或其他监控继续运行。
+- TrayS 已移除自己的 WinRing0 模块句柄、驱动文件、旧 import library 和 AMD/Intel 固定 PCI/MSR 回退路径；NVIDIA/AMD 显卡厂商 API 仍作为独立的只读温度路径。LHM 0.9.6 使用 PawnIO 后端，TrayS 只在 PawnIO 设备已经安装且可访问时加载它。TrayS 不安装、不启动或捆绑 PawnIO 驱动，也不会回退到 WinRing0。
+- CPU 温度路径先读取 Windows/ACPI Thermal Zone 的 PDH 只读计数器：优先 `High Precision Temperature`，再兼容普通 `Temperature`；若固件没有热区，且 PawnIO 设备可用，则尝试 LHM 传感器。LHM CPU 组会在 `Computer::Open()` 前显式启用。AMD `Core (Tctl/Tdie)` / `Core (Tdie)` 优先作为 CPU 封装读数，传感器缺失时再平均有效 CPU 温度值。ACPI 与 PawnIO 都不可用时显示不可用，不会为了取得数字读取旧 WinRing0 或安装驱动。
 - PDH 句柄、函数指针和计数器状态均经过检查；缺失的性能计数器会降级为不可用，不再向 `lodctr` 发起隐式系统修改。
 - 任务栏图标位置改为一次性移动，取消逐像素 `SetWindowPos` 动画；查找 Explorer 任务栏改为有限重试，避免 Explorer 重启时永久阻塞或造成高 CPU。
 - Explorer 的任务栏子窗口查找使用有界的 `EnumChildWindows` 类名枚举，兼容 Windows 11 的 XAML/Composition 中间层；当 `FindWindowEx` 无法返回实际任务列表句柄时，监控窗口仍能定位和刷新。
@@ -28,15 +28,15 @@
 - 配置文件读取改为临时结构 + 完整长度/版本校验，刷新间隔限制在 100–5000 ms，默认值从 11 ms 调整为 400 ms；退出时先等待工作线程，超时才使用最后手段终止。
 - Visual Studio solution 只保留实际支持的 x86/x64 配置，移除了把 ARM/ARM64/Any CPU 错误映射到 x64 的条目；两个项目的输出目录统一到 `Bin\\$(Platform)\\$(Configuration)`，并建立 TrayS 对监控 DLL 项目的构建依赖。
 
-默认安全发布包只包含 `TrayS.exe` 和文档，因此不会把仍含旧 WinRing0 字符串的第三方 LHM 程序集交给安全软件扫描；TrayS 内置的 AMD/NVIDIA 用户态 GPU 温度接口仍可用。GPU 路径只调用 NVIDIA NVAPI 温度读取和 AMD ADL 温度读取，遍历同一厂商的全部物理适配器并取最高有效读数；不调用风扇、功耗、频率、电压或其他写入接口。混合 AMD+iGPU/NVIDIA 独显、多 NVIDIA 卡、虚拟显示适配器或某一厂商 DLL 缺失时，失败只影响对应适配器，其他路径继续工作。需要在隔离环境测试 LHM 时，才使用 `-IncludeLhm` 生成实验包，该包必须同时包含 `OpenHardwareMonitorApi.dll`、`LibreHardwareMonitorLib.dll` 和 `HidSharp.dll`；缺少后者时，监控 DLL 会在创建 `Computer` 时降级为无温度输出。静态检查脚本会验证这些程序集的版本和 PE 架构。
+标准发布包包含 LHM 0.9.6 x86/x64 对应程序集、必要依赖、第三方许可和源代码链接；不包含任何 `.sys` 驱动。LHM 只有在 PawnIO 设备已经可访问时才会加载。AMD/NVIDIA 用户态 GPU 温度接口仍可独立工作：它们只调用 NVAPI/ADL 温度读取，逐卡枚举并取最高有效值，不调用风扇、功耗、频率、电压或其他写入接口。混合 AMD+iGPU/NVIDIA 独显、多 NVIDIA 卡、虚拟显示适配器或某一厂商 DLL 缺失时，失败只影响对应适配器。静态检查会验证 LHM x86/x64 版本、PE 架构、PawnIO 门控和发布依赖清单。
 
 ## 仍需明确的限制
 
-`0.9.4` 是为了保持现有 net472 C++/CLI 包装层和 Win32 构建可用而选择的过渡版本。它本身仍包含旧版 WinRing0 后端；因此本次修改通过默认禁用 LHM，消除了 TrayS 正常启动时触发该后端的路径，但不能宣称 DLL 内部已经删除所有第三方驱动代码。默认 CPU 温度不依赖 LHM，而是尽力使用 Windows/ACPI 热区；只有在 ACPI 不可用、且用户明确设置 `TRAYS_ENABLE_LHM=1` 时才会启用 LHM（旧 AMD 别名仅用于兼容测试），并应在隔离环境观察安全软件、睡眠唤醒和重启行为。更长期的方向是迁移到 PawnIO 版本的 LHM（0.9.5 或更高版本），但 PawnIO 同样涉及内核驱动安装，必须单独完成签名、权限和实机回归后才能改变默认策略。
+Ryzen 9 9955HX 的 LHM 传感器路径依赖单独安装的 PawnIO 软件和已经可访问的 `\\?\GLOBALROOT\Device\PawnIO` 设备。发布包不会捆绑或安装该驱动；未安装 PawnIO 时，TrayS 继续尝试 ACPI 温度路径并安全降级。当前这台 9955HX 机器没有公开 ACPI 热区且尚未安装 PawnIO，因此我们能确认问题原因和代码路径，但不能把真实硬件读数写成已验证结果。安装 PawnIO 后的温度输出仍需在该机实测。
 
-历史维护记录显示，带有 VS 2022 Build Tools（MSBuild 17.14、MSVC v143）的环境曾完成 Release|x64 与 Release|Win32 构建，静态检查和链接均通过，生成的安全包不包含 LHM/WinRing0/PawnIO/Ols。本工作目录没有系统级 MSBuild，因此无法在这里重建 C++/CLI Release；同时已用项目内的便携式 LLVM-MinGW 生成 `dist\TrayS-compat-win11-x64\TrayS-compat-win11-x64.exe` 做原生 Win32 兼容性验证。该 EXE 静态链接 LLVM C++ 运行库，不依赖工具链目录中的私有 DLL。
+1.7.1 在本工作目录使用 VS 2022 Build Tools / MSVC v143 完成 x64 与 Win32 Release 构建，并运行静态兼容性校验和更新器多文件安装/回滚模拟。该测试不安装、不启动 PawnIO，也不加载 WinRing0。
 
-在本机 Windows 11 build 22631 上，便携式 EXE 已脱离 `.buildtools` 直接启动并保持运行；Win32 枚举确认可见监控窗口的 `GWLP_HWNDPARENT` 指向 `Shell_TrayWnd`，矩形为 `692,746-979,783`，任务栏矩形为 `0,728-1280,800`，两者相交。开启临时兼容配置后，通过 `TrayS` 共享映射读取到 `iTemperature1=28`，说明 ACPI CPU 温度路径已在实际运行进程中生效。该机器只发现 Intel Iris Xe 和 OrayIddDriver，未发现 ADL/NVAPI DLL，因此 GPU 温度能力仍按不可用降级。AMD、Intel、多显卡和不同 Windows build 的完整实机回归仍需在隔离环境逐项完成；请使用管理员权限按下表回归：
+当前本机 CPU 为 AMD Ryzen 9 9955HX。Windows ACPI Thermal Zone 查询没有可用实例；PawnIO 未安装，因此未对该机的 LHM 读取结果作实测声明。AMD、Intel、多显卡和不同 Windows build 的完整实机回归仍需逐项完成：
 
 | 平台/场景 | 需要确认的行为 |
 | --- | --- |
@@ -84,7 +84,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-compatibili
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 ```
 
-默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.0_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.0_x86`。安全包只复制新构建的 `TrayS.exe` 和兼容性说明；旧的 WinRing0 文件、旧 import library、LHM 程序集和个人配置不会自动进入包。若要在隔离环境测试 LHM，显式增加 `-IncludeLhm`；若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
+默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.1_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.1_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
 
 如果本机没有 MSBuild，可以把 VS 2022 Build Tools 安装到仓库内的 `.buildtools` 目录。构建完成后，先运行 `tools\uninstall-build-tools.ps1`，让官方 Visual Studio Installer 完成卸载并清理该目录，再删除整个仓库目录；直接删除 `.buildtools` 会留下安装器注册信息和缓存，不应作为卸载步骤。
 

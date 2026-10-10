@@ -408,8 +408,8 @@ pfnAccessibleChildren AccessibleChildrenT;
 // that the managed temperature entry point is available, never that a kernel
 // driver was loaded by TrayS.
 BOOL bRing0=FALSE;
-// LibreHardwareMonitor 0.9.4 still contains the legacy WinRing0 backend.
-// Keep it disabled unless the user explicitly opts in through the environment.
+// LHM 0.9.6 is loaded only when an already-installed PawnIO device can be
+// opened; TrayS never installs or starts a hardware driver.
 BOOL bLhmDisabled = TRUE;
 ////////////////////////////////////////////////ATI显卡温度
 // Memory allocation function

@@ -10,12 +10,8 @@ param(
 
     [string]$ConfigSourceDirectory,
 
-    [switch]$Force,
+    [switch]$Force
 
-    # LHM 0.9.4 still contains a legacy WinRing0 backend. Keep it out of the
-    # default package; include it only when an operator explicitly requests an
-    # isolated compatibility package for testing.
-    [switch]$IncludeLhm
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,7 +22,7 @@ if ([string]::IsNullOrWhiteSpace($PackageName)) {
     # Keep the product name in the archive so an extracted release is
     # immediately recognizable instead of looking like an anonymous legacy
     # `_x64_ALL_...` build.
-    $PackageName = "TrayS_1.7.0_${platformLabel}"
+    $PackageName = "TrayS_1.7.1_${platformLabel}"
 }
 
 if ($PackageName -eq '.' -or $PackageName -eq '..' -or
@@ -142,44 +138,13 @@ if ($vcVarsPath) {
     }
 }
 
-# C++/CLI projects link against MSCOREE.lib. Some lightweight Build Tools
-# installations do not include the .NET Framework SDK import library, even
-# though the Windows runtime provides mscoree.dll. Generate a local import
-# library from the system DLL export list so the build remains self-contained.
-$mscoreeDef = Join-Path $repoRoot 'tools\mscoree.def'
+# C++/CLI projects link against MSCOREE.lib. Use the checked-in architecture-
+# specific import library: x86 must resolve the decorated stdcall symbol to the
+# undecorated `_CorDllMain` export present in Windows' mscoree.dll.
 $mscoreeLib = Join-Path $repoRoot ("tools\mscoree-{0}.lib" -f $machine)
 $projectMscoreeLib = Join-Path $repoRoot 'OpenHardwareMonitorApi\mscoree.lib'
 if (-not (Test-Path -LiteralPath $mscoreeLib -PathType Leaf)) {
-    $libCandidates = @()
-    $libCommand = Get-Command lib.exe -ErrorAction SilentlyContinue
-    if ($libCommand) {
-        $libCandidates += $libCommand.Source
-    }
-    $toolRoots = @(
-        (Join-Path $repoRoot '.buildtools\VC\Tools\MSVC'),
-        'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC',
-        'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC',
-        'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC',
-        'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC'
-    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
-    foreach ($toolRoot in $toolRoots) {
-        foreach ($toolVersion in (Get-ChildItem -LiteralPath $toolRoot -Directory -ErrorAction SilentlyContinue)) {
-            foreach ($hostArchitecture in @('Hostx64', 'Hostx86')) {
-                $candidate = Join-Path $toolVersion.FullName ("bin\{0}\{1}\lib.exe" -f $hostArchitecture, $machine)
-                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                    $libCandidates += $candidate
-                }
-            }
-        }
-    }
-    $libCandidates = $libCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-    if ([string]::IsNullOrWhiteSpace($libCandidates) -or -not (Test-Path -LiteralPath $mscoreeDef -PathType Leaf)) {
-        throw 'MSCOREE import library is missing and lib.exe/mscoree.def could not be found.'
-    }
-    & $libCandidates /nologo ("/machine:{0}" -f $machine) /def:$mscoreeDef /out:$mscoreeLib
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $mscoreeLib -PathType Leaf)) {
-        throw 'Failed to generate the local MSCOREE import library.'
-    }
+    throw "Architecture-specific MSCOREE import library is missing: $mscoreeLib"
 }
 Copy-Item -LiteralPath $mscoreeLib -Destination $projectMscoreeLib -Force
 
@@ -228,11 +193,26 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSBuild failed with exit code $LASTEXITCODE; package was not created."
 }
 
-$requiredFiles = @(
-    (Join-Path $buildOutput 'TrayS.exe'),
-    (Join-Path $buildOutput 'OpenHardwareMonitorApi.dll'),
-    (Join-Path $repoRoot 'OpenHardwareMonitorApi/LibreHardwareMonitorLib.dll'),
-    (Join-Path $repoRoot 'OpenHardwareMonitorApi/HidSharp.dll')
+$runtimePayloadNames = @(
+    'OpenHardwareMonitorApi.dll',
+    'LibreHardwareMonitorLib.dll',
+    'HidSharp.dll',
+    'DiskInfoToolkit.dll',
+    'RAMSPDToolkit-NDD.dll',
+    'BlackSharp.Core.dll',
+    'Microsoft.Bcl.AsyncInterfaces.dll',
+    'Microsoft.Bcl.HashCode.dll',
+    'System.Buffers.dll',
+    'System.Memory.dll',
+    'System.Numerics.Vectors.dll',
+    'System.Runtime.CompilerServices.Unsafe.dll',
+    'System.Security.AccessControl.dll',
+    'System.Security.Principal.Windows.dll',
+    'System.Threading.AccessControl.dll',
+    'System.Threading.Tasks.Extensions.dll'
+)
+$requiredFiles = @((Join-Path $buildOutput 'TrayS.exe')) + @(
+    $runtimePayloadNames | ForEach-Object { Join-Path $buildOutput $_ }
 )
 foreach ($requiredFile in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
@@ -254,13 +234,16 @@ if ((Test-Path -LiteralPath $packageRoot) -or (Test-Path -LiteralPath $archivePa
 
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $buildOutput 'TrayS.exe') -Destination $packageRoot
-if ($IncludeLhm) {
-    Copy-Item -LiteralPath (Join-Path $buildOutput 'OpenHardwareMonitorApi.dll') -Destination $packageRoot
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'OpenHardwareMonitorApi/LibreHardwareMonitorLib.dll') -Destination $packageRoot
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'OpenHardwareMonitorApi/HidSharp.dll') -Destination $packageRoot
+foreach ($runtimePayloadName in $runtimePayloadNames) {
+    Copy-Item -LiteralPath (Join-Path $buildOutput $runtimePayloadName) -Destination $packageRoot
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'COMPATIBILITY.md') -Destination $packageRoot
 Copy-Item -LiteralPath (Join-Path $repoRoot 'MEMORY_AUDIT.md') -Destination $packageRoot
+Copy-Item -LiteralPath (Join-Path $repoRoot 'THIRD-PARTY-NOTICES.md') -Destination $packageRoot
+$thirdPartyLicenseRoot = Join-Path $repoRoot 'OpenHardwareMonitorApi/ThirdParty/LibreHardwareMonitor-0.9.6'
+foreach ($licenseName in @('LICENSE-MPL-2.0.txt', 'PAWNIO-COPYING.txt', 'LICENSE-HidSharp.txt', 'LICENSE-DOTNET-MIT.txt')) {
+    Copy-Item -LiteralPath (Join-Path $thirdPartyLicenseRoot $licenseName) -Destination $packageRoot
+}
 
 if (-not [string]::IsNullOrWhiteSpace($ConfigSourceDirectory)) {
     if (-not (Test-Path -LiteralPath $ConfigSourceDirectory -PathType Container)) {
@@ -283,13 +266,17 @@ foreach ($forbiddenName in $forbiddenNames) {
         throw "Forbidden legacy artifact was copied into the package: $forbiddenName"
     }
 }
+if (Get-ChildItem -LiteralPath $packageRoot -Filter '*.sys' -File) {
+    throw 'Kernel driver files must never be included in the release package.'
+}
 
 $manifestLines = @(
     "TrayS maintained package",
     ("Platform: {0}" -f $Platform),
     ("Configuration: {0}" -f $Configuration),
     ("Built: {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')),
-    $(if ($IncludeLhm) { 'LHM compatibility payload included by explicit request; WinRing0 path remains opt-in.' } else { 'Safe package: LHM/WinRing0 payload omitted; vendor GPU APIs remain in TrayS.exe.' }),
+    'LibreHardwareMonitor 0.9.6 is included; TrayS loads it only when the PawnIO device is already installed and accessible.',
+    'TrayS does not install, start, or bundle PawnIO or any kernel driver.',
     'This package was produced from the current working tree.'
 )
 $manifestLines | Set-Content -LiteralPath (Join-Path $packageRoot 'PACKAGE.txt') -Encoding UTF8

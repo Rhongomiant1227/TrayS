@@ -22,9 +22,9 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 本仓库来自上游项目 [cgbsmy/TrayS](https://github.com/cgbsmy/TrayS) 的 fork，由 [Rhongomiant1227/TrayS](https://github.com/Rhongomiant1227/TrayS) 继续维护。上游版本已经比较老，面对新一代 AMD 平台、混合显卡、Windows 11 Shell 和现代安全软件时，容易出现兼容性或告警问题；本 fork 的目标是保留 TrayS 的轻巧体验，同时把高风险、过时和容易误伤系统的路径收紧。
 
-当前维护版本：**TrayS 1.7**
+当前维护版本：**TrayS 1.7.1**
 
-1.7 修复自动更新时旧程序退出后没有替换新版本的问题；替换失败会恢复旧文件并显示原因。
+1.7 修复自动更新时旧程序退出后没有替换新版本的问题；1.7.1 在更新时会一并暂存、校验并替换温度监控运行库，失败时恢复原有文件。
 
 旧版 1.5/1.6 不建议继续下载或使用：旧更新器可能在点击更新后退出，但没有完成新版本替换。1.5 用户请先手动安装 1.7，之后即可使用修复后的自动更新。
 
@@ -33,11 +33,12 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 ### 🧊 温度监控：优先安全降级
 
 - CPU 温度默认优先尝试 Windows/ACPI Thermal Zone 的只读 PDH 路径，支持 `High Precision Temperature` 和普通 `Temperature` 计数器。
+- 当固件没有公开 ACPI 热区时，1.7.1 会在 PawnIO 已安装并且设备可访问的情况下，使用 LibreHardwareMonitor 0.9.6 读取 AMD Zen 5（包括 Ryzen 9 9955HX）CPU 温度；AMD 的 Tctl/Tdie 封装读数优先于核心温度平均值。
 - 为保持旧配置兼容，`显示温度` 默认关闭；需要在设置窗口勾选后才会创建温度采样路径和任务栏温度栏。
-- AMD Ryzen、Intel Core/Xeon 等平台只要固件向 Windows 暴露热区，就可以尝试读取；没有热区时显示不可用，不会为了“必须有数字”去读 MSR、PCI 配置空间或安装驱动。
+- AMD Ryzen、Intel Core/Xeon 等平台只要固件向 Windows 暴露热区，就可以尝试读取；没有热区且没有可用 PawnIO 设备时显示不可用。
 - AMD 显卡使用 ADL 只读温度接口，NVIDIA 显卡使用 NVAPI 只读温度接口；逐卡枚举，混合 AMD+iGPU/NVIDIA、多 NVIDIA 卡或虚拟显示适配器时，单个设备失败不会拖垮其他设备。
 - 风扇、频率、电压、功耗、超频和驱动重载接口不在默认监控路径中。
-- LHM/WinRing0/PawnIO 相关路径默认关闭。旧版 LHM 程序集仍可能包含旧驱动代码，只有明确设置 `TRAYS_ENABLE_LHM=1` 才会尝试加载，因此安全包不会在正常启动时安装或打开这些内核组件。
+- 随包提供的 LHM 0.9.6 只会在 PawnIO 设备已经安装并可访问时加载。TrayS 不安装、不启动或捆绑 PawnIO 驱动，也不再使用 WinRing0；没有 PawnIO 时继续使用 ACPI 路径。
 
 ### 🛡️ 安全边界：少一点“神秘操作”
 
@@ -67,11 +68,11 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 更新流程会从固定的 GitHub HTTPS API 查询最新 Release，严格选择当前版本和架构对应的资产，例如：
 
 ```text
-TrayS_1.7.0_x64.zip
-TrayS_1.7.0_x86.zip
+TrayS_1.7.1_x64.zip
+TrayS_1.7.1_x86.zip
 ```
 
-下载包在安装前会检查 Release digest、本地 SHA-256、版本资源和 PE 架构。程序会先退出，再由临时 helper 完成替换并重启；失败时保留旧 EXE，不会把半个更新包覆盖到正在运行的程序上。更新过程不打开浏览器，也不调用第三方下载器。
+下载包在安装前会检查 Release digest、本地 SHA-256、版本资源和 PE 架构。程序会先退出，再由临时 helper 完成替换并重启；失败时恢复旧 EXE 和所有已替换的监控运行库。更新过程不打开浏览器，也不调用第三方下载器。
 
 ## 📦 下载和使用
 
@@ -88,7 +89,7 @@ TrayS.dat             # 原有设置，保持旧结构兼容
 TrayS.update.dat      # 更新开关，默认不存在即视为开启
 ```
 
-如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`，不要为了绕过告警而关闭系统防护。默认包不包含 LHM、WinRing0、PawnIO、Ols 或 `.sys` 驱动文件；如果仍有告警，应把告警路径和行为交给安全软件分析，而不是盲目放行。
+如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`，不要为了绕过告警而关闭系统防护。1.7.1 包含 LHM 0.9.6 用户态程序集及依赖，但不包含 WinRing0、PawnIO 驱动、Ols 或 `.sys` 驱动文件。9955HX 等 Ryzen 温度传感器需要用户另行安装 PawnIO；TrayS 检测到设备后只会打开它读取数据，不会更改驱动或服务状态。随包附带第三方许可和源码链接。
 
 ## 🧰 从源码构建
 
@@ -126,16 +127,16 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
   -Platform x64 -Configuration Release `
-  -PackageName TrayS_1.7.0_x64 -Force
+  -PackageName TrayS_1.7.1_x64 -Force
 
 # x86
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
   -Platform Win32 -Configuration Release `
-  -PackageName TrayS_1.7.0_x86 -Force
+  -PackageName TrayS_1.7.1_x86 -Force
 ```
 
-默认包只包含 `TrayS.exe`、`COMPATIBILITY.md`、`PACKAGE.txt` 和 `SHA256SUMS.txt`。它不会把 `.buildtools`、`Bin` 中间文件、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 或 LHM DLL 打进去。`-IncludeLhm` 只用于隔离测试，不是默认发布方案。
+标准包包含 TrayS EXE、LHM 0.9.6 的 x86/x64 对应运行程序集、必要依赖、兼容性说明和第三方许可。包内没有驱动文件；TrayS 只在已安装且可访问 PawnIO 时加载 LHM。构建脚本不会把 `.buildtools`、`Bin` 中间文件、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 驱动打进去。
 
 ## 🔍 维护版详细改进清单
 
@@ -148,7 +149,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 | AMD GPU | ADL 动态加载、活动适配器过滤、逐卡只读温度读取。 |
 | NVIDIA GPU | NVAPI 物理 GPU 数组按 API 最大值分配，逐卡读取并限制传感器范围。 |
 | 混合显卡 | AMD+iGPU/NVIDIA、多 NVIDIA、虚拟适配器和 DLL 缺失时互不拖累。 |
-| LHM 边界 | LHM 作为显式 opt-in；默认包不携带仍可能包含旧驱动后端的托管 DLL。 |
+| LHM 边界 | 随包提供 LHM 0.9.6；只在 PawnIO 设备已存在并可访问时启用，TrayS 不安装驱动。 |
 | DLL 安全 | System32/应用目录限定加载，降低 DLL 搜索路径劫持风险。 |
 | 网络 | WinHTTP HTTPS、固定主机、请求白名单、5 秒超时、响应大小上限。 |
 | 配置 | 保持 `TRAYSAVE` 固定布局和版本兼容；更新开关单独原子写入。 |
@@ -161,9 +162,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 🧪 测试边界
 
-本次工作目录已完成静态检查、只读兼容性诊断，并用仓库内 LLVM-MinGW 重新编译了 `dist\TrayS-compat-win11-x64\TrayS-compat-win11-x64.exe`。该 EXE 已在 Windows 11 build 22631 上脱离工具链目录直接启动；窗口枚举确认监控窗口是可见的任务栏后代，矩形与 `Shell_TrayWnd` 重叠。使用临时兼容配置开启温度后，共享监控数据报告 CPU 温度 28°C。当前机器没有 AMD/NVIDIA 厂商 DLL，所以 Intel/虚拟显示适配器的 GPU 温度仍按能力不可用处理；没有加载 LHM/WinRing0/PawnIO，也没有重载 AMD/NVIDIA 驱动。
-
-这次便携构建是原生 Win32 兼容性验证产物，不替代带 C++/CLI 的 MSVC Release 包。完整 x64/x86 Release 仍需 Visual Studio Build Tools；当前机器未检测到 MSBuild，因此没有声称完成 C++/CLI Release 构建。
+1.7.1 的发布前检查包括 x64/x86 C++/CLI Release 构建、静态兼容性校验，以及模拟更新成功和多文件回滚。当前机器的 ACPI Thermal Zone 不提供温度实例，PawnIO 尚未安装，因此未在这台 9955HX 上实测 Zen 5 传感器输出；此场景需要安装 PawnIO 后验证。TrayS 不会替用户安装内核驱动。
 
 真实硬件回归仍需要在可恢复的隔离环境中逐项完成，尤其是：
 

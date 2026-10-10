@@ -52,6 +52,11 @@ namespace OpenHardwareMonitorApi
         return error_message;
     }
 
+    extern "C" OPENHARDWAREMONITOR_API const wchar_t* TraySGetHardwareMonitorError()
+    {
+        return error_message.c_str();
+    }
+
     float COpenHardwareMonitor::CpuTemperature()
     {
         return m_cpu_temperature;
@@ -241,53 +246,70 @@ namespace OpenHardwareMonitorApi
     bool COpenHardwareMonitor::GetCpuTemperature(IHardware^ hardware, float& temperature)
     {
 		temperature = -1.0f;
-        if (hardware == nullptr || hardware->Sensors == nullptr)
-        {
-			if (hardware != nullptr && hardware->SubHardware != nullptr)
+		std::vector<float> temperatures;
+		float preferredTemperature = -1.0f;
+		int preferredPriority = INT_MAX;
+		CollectCpuTemperatureSensors(hardware, temperatures, preferredTemperature, preferredPriority);
+		if (preferredPriority != INT_MAX && std::isfinite(preferredTemperature))
+		{
+			temperature = preferredTemperature;
+			return true;
+		}
+		if (temperatures.empty())
+			return false;
+
+		double sum{};
+		for (float value : temperatures)
+			sum += value;
+		const double average = sum / static_cast<double>(temperatures.size());
+		if (!std::isfinite(sum) || !std::isfinite(average) || average < -50.0 || average > 255.0)
+			return false;
+		temperature = static_cast<float>(average);
+		return true;
+    }
+
+	void COpenHardwareMonitor::CollectCpuTemperatureSensors(IHardware^ hardware,
+		std::vector<float>& temperatures, float& preferredTemperature, int& preferredPriority)
+	{
+		if (hardware == nullptr)
+			return;
+		if (hardware->Sensors != nullptr)
+		{
+			for (int i = 0; i < hardware->Sensors->Length; ++i)
 			{
-				for (int i = 0; i < hardware->SubHardware->Length; ++i)
+				ISensor^ sensor = hardware->Sensors[i];
+				if (sensor == nullptr || sensor->SensorType != SensorType::Temperature)
+					continue;
+				float value = -1.0f;
+				if (!TryGetSensorValue(sensor, value))
+					continue;
+				System::String^ name = sensor->Name;
+				InsertValueToMap(m_all_cpu_temperature, ClrStringToStdWstring(name), value);
+				temperatures.push_back(value);
+
+				// AMD's Tctl/Tdie reading represents the CPU package temperature.
+				// Prefer it over the mean of core and CCD sensors when available.
+				int priority = INT_MAX;
+				if (name == L"Core (Tctl/Tdie)") priority = 0;
+				else if (name == L"Core (Tdie)") priority = 1;
+				else if (name == L"CPU Package" || name == L"CPU Package Temperature") priority = 2;
+				else if (name == L"Package") priority = 3;
+				else if (name == L"Core Average") priority = 4;
+				else if (name == L"Core (Tctl)") priority = 5;
+				if (priority < preferredPriority)
 				{
-					if (hardware->SubHardware[i] != nullptr && GetCpuTemperature(hardware->SubHardware[i], temperature))
-						return true;
+					preferredPriority = priority;
+					preferredTemperature = value;
 				}
 			}
-			return false;
 		}
-        for (int i = 0; i < hardware->Sensors->Length; i++)
-        {
-            //找到温度传感器
-            if (hardware->Sensors[i] != nullptr && hardware->Sensors[i]->SensorType == SensorType::Temperature)
-            {
-                String^ name = hardware->Sensors[i]->Name;
-                float sensor_temperature = -1;
-                if (!TryGetSensorValue(hardware->Sensors[i], sensor_temperature))
-                    continue;
-                //保存每个CPU传感器的温度
-                InsertValueToMap(m_all_cpu_temperature, ClrStringToStdWstring(name), sensor_temperature);
-            }
-        }
-        //计算平均温度
-        if (!m_all_cpu_temperature.empty())
-        {
-            double sum{};
-            for (const auto& item : m_all_cpu_temperature)
-                sum += item.second;
-            const double average = sum / static_cast<double>(m_all_cpu_temperature.size());
-            if (std::isfinite(sum) && std::isfinite(average) && average >= -50.0 && average <= 255.0)
-                temperature = static_cast<float>(average);
-            else
-                temperature = -1.0f;
-        }
-        if (m_all_cpu_temperature.empty() && hardware->SubHardware != nullptr)
+		if (hardware->SubHardware != nullptr)
 		{
 			for (int i = 0; i < hardware->SubHardware->Length; ++i)
-			{
-				if (hardware->SubHardware[i] != nullptr && GetCpuTemperature(hardware->SubHardware[i], temperature))
-					return true;
-			}
+				CollectCpuTemperatureSensors(hardware->SubHardware[i], temperatures,
+					preferredTemperature, preferredPriority);
 		}
-		return !m_all_cpu_temperature.empty() && std::isfinite(temperature);
-    }
+	}
 
     bool COpenHardwareMonitor::GetGpuUsage(IHardware^ hardware, float& gpu_usage)
     {
@@ -482,6 +504,9 @@ namespace OpenHardwareMonitorApi
         computer = gcnew Computer();
         try
         {
+			// Computer defaults every hardware group to disabled. Enable CPU before
+			// Open() so its CPU group and sensors are actually created.
+			computer->IsCpuEnabled = true;
             computer->Open();
         }
         catch (...)

@@ -93,6 +93,10 @@
     <IncludePath>$(IncludePath)</IncludePath>
     <OutDir>$(SolutionDir)Bin\$(Platform)\$(Configuration)\</OutDir>
   </PropertyGroup>
+  <PropertyGroup>
+    <LhmRuntimeArchitecture Condition="'$(Platform)'=='Win32'">x86</LhmRuntimeArchitecture>
+    <LhmRuntimeArchitecture Condition="'$(Platform)'=='x64'">x64</LhmRuntimeArchitecture>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -148,11 +152,63 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <Reference Include="HidSharp">
-      <HintPath>HidSharp.dll</HintPath>
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\HidSharp.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="LibreHardwareMonitorLib">
-      <HintPath>LibreHardwareMonitorLib.dll</HintPath>
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\$(LhmRuntimeArchitecture)\LibreHardwareMonitorLib.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="BlackSharp.Core">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\BlackSharp.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="DiskInfoToolkit">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\DiskInfoToolkit.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="RAMSPDToolkit-NDD">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\RAMSPDToolkit-NDD.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.Bcl.AsyncInterfaces">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\Microsoft.Bcl.AsyncInterfaces.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.Bcl.HashCode">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\Microsoft.Bcl.HashCode.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Buffers">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\System.Buffers.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Memory">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\System.Memory.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Numerics.Vectors">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\System.Numerics.Vectors.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Security.AccessControl">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\System.Security.AccessControl.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Security.Principal.Windows">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\System.Security.Principal.Windows.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Threading.AccessControl">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\System.Threading.AccessControl.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Threading.Tasks.Extensions">
+      <HintPath>ThirdParty\LibreHardwareMonitor-0.9.6\System.Threading.Tasks.Extensions.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="System" />

@@ -5,6 +5,7 @@
 #include "OpenHardwareMonitorApi.h"
 #include "UpdateVisitor.h"
 #include <map>
+#include <vector>
 
 using namespace System;
 using namespace LibreHardwareMonitor::Hardware;
@@ -35,6 +36,8 @@ namespace OpenHardwareMonitorApi {
     private:
         bool GetHardwareTemperature(IHardware^ hardware, float& temperature);
         bool GetCpuTemperature(IHardware^ hardware, float& temperature);
+        void CollectCpuTemperatureSensors(IHardware^ hardware, std::vector<float>& temperatures,
+            float& preferredTemperature, int& preferredPriority);
         bool GetGpuUsage(IHardware^ hardware, float& gpu_usage);
         bool GetHddUsage(IHardware^ hardware, float& hdd_usage);
 

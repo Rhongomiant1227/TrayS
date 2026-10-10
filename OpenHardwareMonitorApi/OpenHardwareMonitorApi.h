@@ -75,18 +75,19 @@ extern "C" OPENHARDWAREMONITOR_API void GetTemperature(float* fCpu,float * fGpu,
 
         if (fCpu || fCpuPackge)
         {
+            // Use the monitor's package-aware selection (including AMD
+            // Tctl/Tdie priority) instead of assuming every CPU provider has
+            // a sensor named "CPU Core #1".
+            cpu = m_pMonitor->CpuTemperature();
+            cpuPackage = cpu;
             const auto& temperatures = m_pMonitor->AllCpuTemperature();
-            auto iter = temperatures.find(L"CPU Core #1");
-            if (iter == temperatures.end() && !temperatures.empty())
-                iter = temperatures.begin();
-            if (iter != temperatures.end())
-                cpu = iter->second;
-
-            iter = temperatures.find(L"CPU Package");
-            if (iter == temperatures.end() && !temperatures.empty())
-                iter = temperatures.begin();
-            if (iter != temperatures.end())
-                cpuPackage = iter->second;
+            auto package = temperatures.find(L"CPU Package");
+            if (package == temperatures.end())
+                package = temperatures.find(L"Core (Tctl/Tdie)");
+            if (package == temperatures.end())
+                package = temperatures.find(L"Core (Tdie)");
+            if (package != temperatures.end())
+                cpuPackage = package->second;
         }
 
         if (fGpu)

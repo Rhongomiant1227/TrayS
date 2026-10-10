@@ -1697,34 +1697,18 @@ int GetCpuTemp(DWORD Core)
 	return acpiTemperature;
 }
 //////////////////////////////////////////////////载入温度DLL
-static BOOL IsAmdProcessor()
+static BOOL IsPawnIoDeviceAvailable()
 {
-	int cpuInfo[4] = {};
-	__cpuid(cpuInfo, 0);
-	char vendor[13] = {};
-	CopyMemory(vendor, &cpuInfo[1], sizeof(DWORD));
-	CopyMemory(vendor + sizeof(DWORD), &cpuInfo[3], sizeof(DWORD));
-	CopyMemory(vendor + sizeof(DWORD) * 2, &cpuInfo[2], sizeof(DWORD));
-	return lstrcmpA(vendor, "AuthenticAMD") == 0;
-}
-
-static BOOL IsEnvironmentFlagEnabled(LPCWSTR name)
-{
-	WCHAR value[8] = {};
-	DWORD length = GetEnvironmentVariableW(name, value, ARRAYSIZE(value));
-	return length > 0 && length < ARRAYSIZE(value) &&
-		(value[0] == L'1' || value[0] == L'y' || value[0] == L'Y' || value[0] == L't' || value[0] == L'T');
-}
-
-static BOOL IsLhmOptIn()
-{
-	// LHM 0.9.4 embeds WinRing0.  The general flag is deliberately an
-	// explicit opt-in for every CPU vendor.  Keep the older AMD-specific flag
-	// as a compatibility alias for existing testers, but do not enable it on
-	// Intel or other processors.
-	if (IsEnvironmentFlagEnabled(L"TRAYS_ENABLE_LHM"))
-		return TRUE;
-	return IsAmdProcessor() && IsEnvironmentFlagEnabled(L"TRAYS_ENABLE_LHM_AMD");
+	// Probe only the already-running PawnIO device. TrayS never installs or
+	// starts the driver; if it is absent or inaccessible, ACPI remains the
+	// temperature source and the managed monitor is not loaded.
+	HANDLE device = CreateFileW(L"\\\\?\\GLOBALROOT\\Device\\PawnIO",
+		GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (device == INVALID_HANDLE_VALUE)
+		return FALSE;
+	CloseHandle(device);
+	return TRUE;
 }
 
 static void FreeTemperatureDLLUnlocked();
@@ -1736,26 +1720,21 @@ void LoadTemperatureDLL()
 	{
 		FreeTemperatureDLLUnlocked();
 	}
-	// Do not fall back to TrayS's own WinRing0 path. Its legacy kernel driver is
-	// blocked by current Windows security products and the direct AMD PCI/MSR
-	// path has caused system hangs on Ryzen mobile and desktop platforms.
-	// LibreHardwareMonitor 0.9.4 remains optional; it may still use its
-	// embedded backend internally, so a future PawnIO migration is required to
-	// remove every WinRing0 dependency. If the managed monitor is unavailable,
-	// the Windows/ACPI path still supplies CPU/package temperature when exposed.
+	// Do not use TrayS's removed WinRing0 path or install a driver. LHM 0.9.6
+	// contains the PawnIO backend and supports Zen 5. Load it only when the
+	// PawnIO device is already present and accessible; otherwise the Windows/
+	// ACPI path remains the safe fallback.
 	bRing0 = FALSE;
 	GetTemperature = NULL;
-	bLhmDisabled = !IsLhmOptIn();
+	bLhmDisabled = !IsPawnIoDeviceAvailable();
 	// Initialise the safe ACPI path before deciding the UI layout. Failure is
 	// harmless and means that this machine exposes no usable thermal zone.
 	AcquireSRWLockExclusive(&g_thermalPdhLock);
 	thermalProbeAttempted = FALSE;
 	BOOL hasAcpiTemperaturePath = EnsureThermalQueryUnlocked();
 	ReleaseSRWLockExclusive(&g_thermalPdhLock);
-	// LHM 0.9.4 opens its embedded WinRing0 driver from Computer::Open().
-	// Keep that path disabled by default on both AMD and Intel. GPU vendor APIs
-	// below remain available in the safe default mode without installing a
-	// kernel driver. A future PawnIO-based LHM upgrade can remove this opt-in.
+	// PawnIO is an external prerequisite for the LHM CPU backend. Merely
+	// probing its device above does not change driver or service state.
 	if (!bLhmDisabled)
 		hOHMA = LoadApplicationLibrarySafe(L"OpenHardwareMonitorApi.dll");
 	if (hOHMA)
@@ -1768,9 +1747,8 @@ void LoadTemperatureDLL()
 		}
 	}
 	// bRing0 is retained as the legacy two-row temperature-layout flag. It now
-	// means that either the safe ACPI path or the explicitly opted-in managed
-	// path can provide a CPU/package sample; it never means a kernel driver was
-	// loaded by TrayS.
+	// means that either the safe ACPI path or the available managed sensor path
+	// can provide a CPU/package sample; it never means a driver was installed.
 	bRing0 = hasAcpiTemperaturePath || (hOHMA != NULL && GetTemperature != NULL);
 #ifdef _WIN64
 	hNVDLL = LoadSystemLibrarySafe(L"nvapi64.dll");

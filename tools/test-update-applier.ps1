@@ -13,8 +13,8 @@ if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
     throw "Build TrayS first or pass -CandidatePath: $CandidatePath"
 }
 $candidateVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($CandidatePath).FileVersion
-if (-not $candidateVersion.StartsWith('1.7.0.')) {
-    throw "The test candidate must have version 1.7.0; found $candidateVersion"
+if (-not $candidateVersion.StartsWith('1.7.1.')) {
+    throw "The test candidate must have version 1.7.1; found $candidateVersion"
 }
 $candidateBytes = [IO.File]::ReadAllBytes($CandidatePath)
 if ($candidateBytes.Length -lt 64 -or [BitConverter]::ToUInt16($candidateBytes, 0) -ne 0x5a4d) {
@@ -39,6 +39,15 @@ foreach ($literal in [regex]::Matches($updateSource, '(?m)^\s*ps \+= L("(?:\\.|[
 $template = $scriptBuilder.ToString()
 if ([string]::IsNullOrWhiteSpace($template)) {
     throw 'Could not extract the embedded updater script from Update.cpp.'
+}
+$payloadMatch = [regex]::Match($template, '\$payloadNames=@\((?<values>[^)]*)\)')
+if (-not $payloadMatch.Success) {
+    throw 'Could not find the updater payload allowlist.'
+}
+$payloadNames = @([regex]::Matches($payloadMatch.Groups['values'].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+if ($payloadNames -notcontains 'TrayS.exe' -or $payloadNames -notcontains 'LibreHardwareMonitorLib.dll' -or
+    $payloadNames -notcontains 'THIRD-PARTY-NOTICES.md') {
+    throw 'Updater payload allowlist does not include the executable, sensor runtime, and notices.'
 }
 $aclSddlMatch = [regex]::Match($updateSource, 'ConvertStringSecurityDescriptorToSecurityDescriptorW\(\s*L"([^"]+)"')
 if (-not $aclSddlMatch.Success) {
@@ -84,7 +93,7 @@ function Invoke-UpdaterScenario([string]$Scenario, [string]$ZipPath, [string]$Ta
                 ('$zip=' + (ConvertTo-PowerShellLiteral $ZipPath)),
                 ('$target=' + (ConvertTo-PowerShellLiteral $TargetPath)),
                 ('$expectedHash=' + (ConvertTo-PowerShellLiteral $Hash)),
-                ('$expectedVersion=' + (ConvertTo-PowerShellLiteral '1.7.0') + "; `$expectedVersion=`$expectedVersion.TrimStart('v')"),
+                ('$expectedVersion=' + (ConvertTo-PowerShellLiteral '1.7.1') + "; `$expectedVersion=`$expectedVersion.TrimStart('v')"),
                 ('$parentPid=' + [string]$ParentProcessId)
             )
             $scriptLines[$index] = ($dynamicAssignments -join "`r`n") + "`r`n" + $scriptLines[$index]
@@ -125,11 +134,11 @@ $testRoot = Join-Path $env:TEMP ('TrayS-update-applier-' + [guid]::NewGuid().ToS
 $packageDirectory = Join-Path $testRoot 'package'
 $installDirectory = Join-Path $testRoot 'installed app with spaces'
 New-Item -ItemType Directory -Path $packageDirectory, $installDirectory -Force | Out-Null
-$packageExe = Join-Path $packageDirectory 'TrayS.exe'
 $zipPath = Join-Path $testRoot 'package.zip'
 $targetPath = Join-Path $installDirectory 'TrayS.exe'
 $markerPath = Join-Path $testRoot 'restart-reached.txt'
 $aclProbePath = Join-Path $testRoot 'helper-acl-probe.tmp'
+$cmdPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
 $parent = $null
 
 try {
@@ -138,28 +147,72 @@ try {
     Remove-Item -LiteralPath $aclProbePath -Force
     Write-Output 'PASS: elevated helper access-control descriptor applies to its input files.'
 
-    Copy-Item -LiteralPath $CandidatePath -Destination $packageExe
-    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $targetPath
-    Compress-Archive -LiteralPath $packageExe -DestinationPath $zipPath -Force
+    $testPackageFiles = @{}
+    foreach ($name in $payloadNames) {
+        $destination = Join-Path $packageDirectory $name
+        if ($name -eq 'TrayS.exe') {
+            Copy-Item -LiteralPath $CandidatePath -Destination $destination
+        }
+        else {
+            $buildSidecar = Join-Path (Split-Path -Parent $CandidatePath) $name
+            $repositoryFile = Join-Path $repoRoot $name
+            if (Test-Path -LiteralPath $buildSidecar -PathType Leaf) {
+                Copy-Item -LiteralPath $buildSidecar -Destination $destination
+            }
+            elseif (Test-Path -LiteralPath $repositoryFile -PathType Leaf) {
+                Copy-Item -LiteralPath $repositoryFile -Destination $destination
+            }
+            else {
+                Set-Content -LiteralPath $destination -Value ("test payload: {0}" -f $name) -Encoding UTF8
+            }
+        }
+        $testPackageFiles[$name] = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+    }
+    Compress-Archive -LiteralPath $packageDirectory -DestinationPath $zipPath -Force
     $packageHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $candidateHash = (Get-FileHash -LiteralPath $CandidatePath -Algorithm SHA256).Hash
 
+    function Reset-InstalledFiles([string[]]$Names, [string]$Directory, [string]$CmdPath) {
+        foreach ($name in $Names) {
+            $path = Join-Path $Directory $name
+            if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force }
+        }
+        Copy-Item -LiteralPath $CmdPath -Destination (Join-Path $Directory 'TrayS.exe') -Force
+        $originalStates = @{}
+        for ($index = 0; $index -lt $Names.Count; $index++) {
+            $name = $Names[$index]
+            if ($name -eq 'TrayS.exe') { continue }
+            $path = Join-Path $Directory $name
+            if (($index % 2) -eq 0) {
+                Set-Content -LiteralPath $path -Value ("old payload: {0}" -f $name) -Encoding UTF8
+                $originalStates[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            }
+        }
+        return $originalStates
+    }
+
+    [void](Reset-InstalledFiles $payloadNames $installDirectory $cmdPath)
     $parent = Start-Process -FilePath $targetPath -ArgumentList '/c ping 127.0.0.1 -n 4 >nul' -WindowStyle Hidden -PassThru
     $success = Invoke-UpdaterScenario 'success' $zipPath $targetPath $packageHash $markerPath $parent.Id $testRoot
     if ($success.ExitCode -ne 0) {
         throw "Successful update simulation failed ($($success.ExitCode)): $($success.Output)"
     }
-    if ((Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash -ne $candidateHash) {
-        throw 'Successful update simulation did not install the verified executable.'
+    foreach ($name in $payloadNames) {
+        $installed = Join-Path $installDirectory $name
+        if (-not (Test-Path -LiteralPath $installed -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $testPackageFiles[$name]) {
+            throw "Successful update simulation did not install the verified payload file: $name"
+        }
     }
     if (-not (Test-Path -LiteralPath $markerPath)) {
         throw 'Successful update simulation did not reach the restart step.'
     }
     Write-Output 'PASS: verified update installs correctly from a path containing spaces.'
 
-    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $targetPath -Force
+    $originalStates = Reset-InstalledFiles $payloadNames $installDirectory $cmdPath
     $oldHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash
-    Compress-Archive -LiteralPath $packageExe -DestinationPath $zipPath -Force
+    Compress-Archive -LiteralPath $packageDirectory -DestinationPath $zipPath -Force
+    $packageHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $parent = Start-Process -FilePath $targetPath -ArgumentList '/c ping 127.0.0.1 -n 4 >nul' -WindowStyle Hidden -PassThru
     $failure = Invoke-UpdaterScenario 'rollback' $zipPath $targetPath $packageHash $markerPath $parent.Id $testRoot
     if ($failure.ExitCode -ne 1) {
@@ -168,10 +221,23 @@ try {
     if ((Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash -ne $oldHash) {
         throw 'Failed update simulation did not restore the original executable.'
     }
+    foreach ($name in $payloadNames) {
+        if ($name -eq 'TrayS.exe') { continue }
+        $installed = Join-Path $installDirectory $name
+        if ($originalStates.ContainsKey($name)) {
+            if (-not (Test-Path -LiteralPath $installed -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalStates[$name]) {
+                throw "Failed update simulation did not restore the existing payload file: $name"
+            }
+        }
+        elseif (Test-Path -LiteralPath $installed) {
+            throw "Failed update simulation did not remove newly installed payload file: $name"
+        }
+    }
     if ($failure.Output -notmatch 'Injected regression failure after replacement') {
         throw "Failure output did not include the cause: $($failure.Output)"
     }
-    Write-Output 'PASS: post-replacement failure restores the old executable and reports the cause.'
+    Write-Output 'PASS: post-replacement failure restores old payload files, removes new ones, and reports the cause.'
 }
 finally {
     if ($parent -and -not $parent.HasExited) {
