@@ -35,6 +35,7 @@ struct CpuSensorBrokerSharedState
 static BOOL g_runningCpuSensorBroker = FALSE;
 static BOOL g_cpuSensorBrokerSetupInProgress = FALSE;
 static HANDLE g_cpuSensorBrokerSetupProcess = NULL;
+static BOOL g_cpuSensorBrokerAutoPromptAttempted = FALSE;
 
 // Network providers are normally trusted Windows components, but adapter
 // enumeration is an externally supplied, variable-sized data boundary. Keep
@@ -1682,9 +1683,13 @@ static DWORD TemperatureForDisplay(float value)
 	return static_cast<DWORD>(value + 0.5f);
 }
 
-int GetCpuTemp(DWORD Core)
+int GetCpuTemp(DWORD Core, DWORD* secondaryTemperature = NULL, DWORD* hddTemperature = NULL)
 {
 	UNREFERENCED_PARAMETER(Core);
+	if (secondaryTemperature)
+		*secondaryTemperature = 0;
+	if (hddTemperature)
+		*hddTemperature = 0;
 	// PawnIO is not accessible to the normal tray UI token. A narrowly scoped,
 	// per-user broker runs from a protected Program Files directory and returns
 	// only the latest CPU temperature through a read/write mapping secured to
@@ -1708,21 +1713,35 @@ int GetCpuTemp(DWORD Core)
 		}
 		if (GetTemperature)
 			GetTemperature(&fCpu,&fGpu,NULL,&fHdd,n,&fCpuPackge);
-		if (TrayData)
+		if (hddTemperature)
+			*hddTemperature = TemperatureForDisplay(fHdd);
+		if (secondaryTemperature)
 		{
-			TrayData->iHddTemperature = TemperatureForDisplay(fHdd);
 			DWORD gpuTemperature = TemperatureForDisplay(fGpu);
 			DWORD packageTemperature = TemperatureForDisplay(fCpuPackge);
-			if (gpuTemperature != 0)
-				TrayData->iTemperature2 = gpuTemperature;
-			else if (packageTemperature != 0)
-				TrayData->iTemperature2 = packageTemperature;
+			*secondaryTemperature = gpuTemperature != 0 ? gpuTemperature : packageTemperature;
 		}
 		DWORD cpuTemperature = TemperatureForDisplay(fCpu);
 		if (cpuTemperature != 0)
 			return cpuTemperature <= INT_MAX ? (int)cpuTemperature : 0;
 	}
 	return GetAcpiCpuTemperature();
+}
+
+static void PublishTemperatureSample(DWORD cpuTemperature, DWORD secondaryTemperature,
+	DWORD hddTemperature)
+{
+	if (!TrayData)
+		return;
+	// Publish only after every provider has finished sampling. The paint thread
+	// reads this shared structure concurrently; clearing it before a slow sensor
+	// call made the display alternate between a valid reading and "--" each poll.
+	InterlockedExchange(reinterpret_cast<volatile LONG*>(&TrayData->iTemperature1),
+		static_cast<LONG>(cpuTemperature));
+	InterlockedExchange(reinterpret_cast<volatile LONG*>(&TrayData->iTemperature2),
+		static_cast<LONG>(secondaryTemperature));
+	InterlockedExchange(reinterpret_cast<volatile LONG*>(&TrayData->iHddTemperature),
+		static_cast<LONG>(hddTemperature));
 }
 //////////////////////////////////////////////////载入温度DLL
 static DWORD g_pawnIoProbeError = ERROR_SUCCESS;
@@ -2566,6 +2585,78 @@ static BOOL LaunchCpuSensorBrokerSetup(HWND owner)
 	return TRUE;
 }
 
+static BOOL ShouldAutoLaunchCpuSensorBrokerSetup(BOOL temperatureMonitoringEnabled,
+	DWORD pawnIoError, BOOL brokerTaskInstalled, BOOL setupInProgress, BOOL promptAlreadyAttempted)
+{
+	return temperatureMonitoringEnabled && pawnIoError == ERROR_ACCESS_DENIED &&
+		!brokerTaskInstalled && !setupInProgress && !promptAlreadyAttempted;
+}
+
+static BOOL HasCpuSensorBrokerAutoPromptBeenAttempted()
+{
+	HKEY key = NULL;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\TrayS\\CpuSensorBroker",
+		0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+		return FALSE;
+	DWORD attempted = 0;
+	DWORD type = 0;
+	DWORD bytes = sizeof(attempted);
+	LONG status = RegQueryValueExW(key, L"AutoAuthorizationPromptAttempted", NULL,
+		&type, reinterpret_cast<LPBYTE>(&attempted), &bytes);
+	RegCloseKey(key);
+	return status == ERROR_SUCCESS && type == REG_DWORD && bytes == sizeof(attempted) && attempted != 0;
+}
+
+static BOOL MarkCpuSensorBrokerAutoPromptAttempted()
+{
+	HKEY key = NULL;
+	DWORD disposition = 0;
+	if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\TrayS\\CpuSensorBroker",
+		0, NULL, 0, KEY_SET_VALUE, NULL, &key, &disposition) != ERROR_SUCCESS)
+		return FALSE;
+	UNREFERENCED_PARAMETER(disposition);
+	DWORD attempted = 1;
+	LONG status = RegSetValueExW(key, L"AutoAuthorizationPromptAttempted", 0,
+		REG_DWORD, reinterpret_cast<const BYTE*>(&attempted), sizeof(attempted));
+	RegCloseKey(key);
+	return status == ERROR_SUCCESS;
+}
+
+static BOOL TryAutoLaunchCpuSensorBrokerSetup(HWND owner)
+{
+	if (g_cpuSensorBrokerAutoPromptAttempted || !TraySave.bMonitorTemperature ||
+		g_pawnIoProbeError != ERROR_ACCESS_DENIED || g_cpuSensorBrokerSetupInProgress)
+		return FALSE;
+	BOOL promptAlreadyAttempted = HasCpuSensorBrokerAutoPromptBeenAttempted();
+	if (promptAlreadyAttempted)
+	{
+		g_cpuSensorBrokerAutoPromptAttempted = TRUE;
+		return FALSE;
+	}
+	BOOL taskInstalled = IsCpuSensorBrokerTaskInstalled();
+	if (!ShouldAutoLaunchCpuSensorBrokerSetup(TraySave.bMonitorTemperature,
+		g_pawnIoProbeError, taskInstalled, g_cpuSensorBrokerSetupInProgress,
+		promptAlreadyAttempted))
+	{
+		if (taskInstalled)
+		{
+			g_cpuSensorBrokerAutoPromptAttempted = TRUE;
+			(void)MarkCpuSensorBrokerAutoPromptAttempted();
+		}
+		return FALSE;
+	}
+	// Persist before opening the consent dialog/UAC. If the user declines,
+	// startup will not keep asking; they can retry explicitly from settings.
+	if (!MarkCpuSensorBrokerAutoPromptAttempted())
+	{
+		TraySRuntimeLog(L"CPU temperature: could not persist the one-time authorization prompt state; use settings to retry.");
+		return FALSE;
+	}
+	g_cpuSensorBrokerAutoPromptAttempted = TRUE;
+	TraySRuntimeLog(L"CPU temperature: requesting one-time broker authorization after access was denied.");
+	return LaunchCpuSensorBrokerSetup(owner);
+}
+
 static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError)
 {
 	if (temperatureC) *temperatureC = 0;
@@ -2988,6 +3079,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 				return 0;
 #endif
 			}
+			// If temperature monitoring was already enabled and PawnIO is present
+			// but denied to this normal tray token, request the broker authorization
+			// once now. Later logons use the scheduled reader without UAC prompts.
+			(void)TryAutoLaunchCpuSensorBrokerSetup(hMain);
 			MSG msg;
 			// 主消息循环:
 			while (GetMessage(&msg, nullptr, 0, 0))
@@ -3236,21 +3331,19 @@ DWORD WINAPI GetDataThreadProc(PVOID pParam)//获取温度占用硬盘线程
 			if (TraySave.bMonitorTemperature)
 			{
 				AcquireSRWLockShared(&g_temperatureLock);
-				// Clear the previous sample first.  This matters when monitoring is
-				// toggled at runtime or when an AMD machine intentionally skips the
-				// optional LHM backend: an unavailable sensor must not leave an old
-				// temperature visible indefinitely.
-				TrayData->iTemperature1 = 0;
-				TrayData->iTemperature2 = 0;
-				TrayData->iHddTemperature = 0;
+				DWORD sampledSecondaryTemperature = 0;
+				DWORD sampledHddTemperature = 0;
 				// CPU temperature is not limited to the optional managed monitor:
 				// GetCpuTemp prefers the hardware package sensor when available,
-				// then falls back to the Windows/ACPI thermal-zone path.
-				TrayData->iTemperature1 = GetCpuTemp(1);
+				// then falls back to the Windows/ACPI thermal-zone path. Keep the
+				// sample local until all providers finish so painting never sees a
+				// temporary zero between consecutive readings.
+				DWORD sampledCpuTemperature = static_cast<DWORD>(GetCpuTemp(1,
+					&sampledSecondaryTemperature, &sampledHddTemperature));
 				// Vendor APIs are a safe supplemental path when the managed monitor
 				// has no GPU sensor (common with hybrid/older AMD drivers). They do
 				// not read CPU MSRs and therefore do not reintroduce WinRing0 risk.
-				if (!hOHMA || TrayData->iTemperature2 == 0)
+				if (!hOHMA || sampledSecondaryTemperature == 0)
 				{
 					int iATITemperature = 0;
 					int iNVTemperature = 0;
@@ -3315,11 +3408,13 @@ DWORD WINAPI GetDataThreadProc(PVOID pParam)//获取温度占用硬盘线程
 						if (iATITemperature != 0 || iNVTemperature != 0)
 					{
 						if (iATITemperature > iNVTemperature)
-							TrayData->iTemperature2 = iATITemperature;
+							sampledSecondaryTemperature = static_cast<DWORD>(iATITemperature);
 						else
-							TrayData->iTemperature2 = iNVTemperature;
+							sampledSecondaryTemperature = static_cast<DWORD>(iNVTemperature);
 					}
 				}
+				PublishTemperatureSample(sampledCpuTemperature, sampledSecondaryTemperature,
+					sampledHddTemperature);
 				ReleaseSRWLockShared(&g_temperatureLock);
 			}
 			if (TraySave.bMonitorTraffic)
@@ -7668,7 +7763,10 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		{
 			TraySave.bMonitorTemperature = IsDlgButtonChecked(hDlg, IDC_CHECK_TEMPERATURE);
 			if (TraySave.bMonitorTemperature)
+			{
 				LoadTemperatureDLL();
+				(void)TryAutoLaunchCpuSensorBrokerSetup(hDlg);
+			}
 			else
 				FreeTemperatureDLL();
 			UpdateCpuTemperatureStatus(hDlg);

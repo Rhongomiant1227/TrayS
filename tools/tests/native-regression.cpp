@@ -263,7 +263,12 @@ static void TestCpuTemperatureSources()
     GetTemperature = ReviewGetTemperature;
     reviewAcpiSamples = 0;
     reviewCpuTemperature = 55.125f;
-    Check(GetCpuTemp(1) == 55, "CPU package sensor lost priority to the ACPI thermal zone");
+    DWORD secondaryTemperature = 0;
+    DWORD hddTemperature = 0;
+    Check(GetCpuTemp(1, &secondaryTemperature, &hddTemperature) == 55,
+        "CPU package sensor lost priority to the ACPI thermal zone");
+    Check(secondaryTemperature == 55 && hddTemperature == 0,
+        "LHM secondary/disk readings were not returned to the caller");
     Check(reviewAcpiSamples == 0, "A usable CPU package unnecessarily sampled ACPI");
     reviewCpuTemperature = std::numeric_limits<float>::quiet_NaN();
     Check(GetCpuTemp(1) == 30, "Invalid hardware reading did not fall back to ACPI");
@@ -312,6 +317,35 @@ static void TestCpuTemperatureLayoutAvailability()
 		"Local hardware monitor does not reserve a CPU temperature row");
 }
 
+static void TestTemperatureSamplePublication()
+{
+	TRAYDATA sample{};
+	TrayData = &sample;
+	PublishTemperatureSample(76, 32, 41);
+	Check(sample.iTemperature1 == 76 && sample.iTemperature2 == 32 && sample.iHddTemperature == 41,
+		"Completed CPU/GPU/disk temperature sample was not published");
+	PublishTemperatureSample(0, 0, 0);
+	Check(sample.iTemperature1 == 0 && sample.iTemperature2 == 0 && sample.iHddTemperature == 0,
+		"Unavailable temperature readings did not replace the previous sample");
+	TrayData = NULL;
+}
+
+static void TestCpuSensorAuthorizationRequestConditions()
+{
+	Check(ShouldAutoLaunchCpuSensorBrokerSetup(TRUE, ERROR_ACCESS_DENIED, FALSE, FALSE, FALSE),
+		"Enabled monitoring did not request authorization after PawnIO denied access");
+	Check(!ShouldAutoLaunchCpuSensorBrokerSetup(FALSE, ERROR_ACCESS_DENIED, FALSE, FALSE, FALSE),
+		"Authorization was requested while temperature monitoring is disabled");
+	Check(!ShouldAutoLaunchCpuSensorBrokerSetup(TRUE, ERROR_ACCESS_DENIED, TRUE, FALSE, FALSE),
+		"Authorization was requested despite an installed broker task");
+	Check(!ShouldAutoLaunchCpuSensorBrokerSetup(TRUE, ERROR_ACCESS_DENIED, FALSE, TRUE, FALSE),
+		"A concurrent authorization request was not suppressed");
+	Check(!ShouldAutoLaunchCpuSensorBrokerSetup(TRUE, ERROR_ACCESS_DENIED, FALSE, FALSE, TRUE),
+		"A declined one-time authorization was requested again automatically");
+	Check(!ShouldAutoLaunchCpuSensorBrokerSetup(TRUE, ERROR_FILE_NOT_FOUND, FALSE, FALSE, FALSE),
+		"Missing PawnIO incorrectly triggered an administrator prompt");
+}
+
 static void TestCpuSensorAuthorizationIsSerialized()
 {
 	HANDLE inFlightSetup = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -352,6 +386,8 @@ int main()
         { "Composition and fullscreen vertical offsets", TestPopupLayout },
         { "CPU package priority, ACPI fallback and permission guidance", TestCpuTemperatureSources },
         { "CPU sensor broker keeps the temperature row visible", TestCpuTemperatureLayoutAvailability },
+        { "Temperature samples publish after providers finish", TestTemperatureSamplePublication },
+        { "CPU sensor authorization prompt is automatic and one-time", TestCpuSensorAuthorizationRequestConditions },
         { "CPU sensor authorization cannot spawn duplicate prompts", TestCpuSensorAuthorizationIsSerialized }
     };
     for (const auto& test : tests)

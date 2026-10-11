@@ -32,7 +32,7 @@
 
 ## 仍需明确的限制
 
-Ryzen 9 9955HX 的 LHM 传感器路径依赖单独安装的 PawnIO 软件和已经可访问的 `\\?\GLOBALROOT\Device\PawnIO` 设备。官方 PawnIO 2.2.0 的设备访问控制只允许 SYSTEM 和提升权限的管理员，因此“已安装驱动”不等同于“普通启动可读”。1.7.3 的一次性授权会把只负责读取 CPU 温度的后台进程放入受保护的 Program Files 目录，并创建当前用户登录时以最高权限启动的任务。托盘 UI 仍以 `asInvoker` 运行；任务 DACL 只授予 SYSTEM/管理员修改权限，当前用户只有读取和运行权限。发布包不会捆绑、安装或修改 PawnIO 驱动及其访问控制。
+Ryzen 9 9955HX 的 LHM 传感器路径依赖单独安装的 PawnIO 软件和已经可访问的 `\\?\GLOBALROOT\Device\PawnIO` 设备。官方 PawnIO 2.2.0 的设备访问控制只允许 SYSTEM 和提升权限的管理员，因此“已安装驱动”不等同于“普通启动可读”。启用温度监控后，若 TrayS 检测到 PawnIO 拒绝访问，会自动请求一次授权，把只负责读取 CPU 温度的后台进程放入受保护的 Program Files 目录，并创建当前用户登录时以最高权限启动的任务。尝试状态保存在 HKCU，避免每次启动重复申请；若用户拒绝，可从设置页手动重试。托盘 UI 仍以 `asInvoker` 运行；任务 DACL 只授予 SYSTEM/管理员修改权限，当前用户只有读取和运行权限。发布包不会捆绑、安装或修改 PawnIO 驱动及其访问控制。
 
 1.7.1 曾在本工作目录使用 VS 2022 Build Tools / MSVC v143 完成 x64 与 Win32 Release 构建，并运行静态兼容性校验和更新器多文件安装/回滚模拟。该测试不安装、不启动 PawnIO，也不加载 WinRing0。
 
@@ -49,10 +49,10 @@ Ryzen 9 9955HX 的 LHM 传感器路径依赖单独安装的 PawnIO 软件和已�
 ## CPU 温度设置
 
 1. 安装 [官方签名的 PawnIO](https://github.com/namazso/PawnIO.Setup/releases)。TrayS 不会代为安装或捆绑驱动。
-2. 在设置中勾选“系统监视”和“显示温度”，点击“授权一次”，并在 UAC 中允许安装。该授权只用于把 CPU 温度后台程序复制到受保护的 Program Files 目录，并创建当前用户登录时以最高权限运行的任务。
+2. 在设置中勾选“系统监视”和“显示温度”。如果 PawnIO 拒绝普通权限访问，TrayS 会主动请求一次管理员授权；允许后，它会把 CPU 温度后台程序复制到受保护的 Program Files 目录，并创建当前用户登录时以最高权限运行的任务。若拒绝，可点击“授权一次”手动重试。
 3. 后续登录时，TrayS 界面以普通权限启动，后台传感器进程由任务计划程序启动，不会再次显示 UAC。9955HX 显示 CPU 的 Tctl/Tdie；不应把 CCD 温度的平均值当成整个 CPU 的封装温度。
 
-默认开机启动使用普通权限，不会提示 UAC。仅在用户主动启用 CPU 硬件传感器时，才会创建提升权限的辅助任务；任务不会运行用户可写目录中的程序，也不能由普通用户修改。设置提示需安装 PawnIO 时，再检查驱动是否存在；若显示无读数 `--`，检查任务计划程序中的 TrayS CPU Sensor 任务。
+默认开机启动使用普通权限，不会提示 UAC。仅在启用 CPU 温度且检测到 PawnIO 访问被拒绝时，程序才会自动请求一次 UAC；任务不会运行用户可写目录中的程序，也不能由普通用户修改。设置提示需安装 PawnIO 时，再检查驱动是否存在；若显示无读数 `--`，检查任务计划程序中的 TrayS CPU Sensor 任务。
 
 开发环境中可使用只读脚本区分驱动、LHM 和程序加载问题。以下命令要求管理员 Windows PowerShell，且已构建 x64 Release：
 
@@ -101,7 +101,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-compatibili
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 ```
 
-默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.4_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.4_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
+默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.5_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.5_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
+
+启用温度监控并检测到 PawnIO 拒绝访问时，TrayS 会自动发起一次授权请求。尝试状态保存在当前用户注册表中，因此拒绝后不会在每次启动重复提示；用户仍可从设置页手动重试。温度采样会先在局部变量中完成，再发布整轮读数，避免 UI 在读取期间显示短暂的 `--`。
 
 如果本机没有 MSBuild，可以把 VS 2022 Build Tools 安装到仓库内的 `.buildtools` 目录。构建完成后，先运行 `tools\uninstall-build-tools.ps1`，让官方 Visual Studio Installer 完成卸载并清理该目录，再删除整个仓库目录；直接删除 `.buildtools` 会留下安装器注册信息和缓存，不应作为卸载步骤。
 
