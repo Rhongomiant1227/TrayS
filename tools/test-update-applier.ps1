@@ -13,8 +13,8 @@ if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
     throw "Build TrayS first or pass -CandidatePath: $CandidatePath"
 }
 $candidateVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($CandidatePath).FileVersion
-if (-not $candidateVersion.StartsWith('1.7.3.')) {
-    throw "The test candidate must have version 1.7.3; found $candidateVersion"
+if (-not $candidateVersion.StartsWith('1.7.4.')) {
+	throw "The test candidate must have version 1.7.4; found $candidateVersion"
 }
 $candidateBytes = [IO.File]::ReadAllBytes($CandidatePath)
 if ($candidateBytes.Length -lt 64 -or [BitConverter]::ToUInt16($candidateBytes, 0) -ne 0x5a4d) {
@@ -32,6 +32,11 @@ if ($candidateMachine -ne $expectedMachine) {
 }
 
 $updateSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS\Update.cpp') -Raw -Encoding UTF8
+if ($updateSource -notmatch 'CreatePowerShellScriptPath\(tempPath, script, ARRAYSIZE\(script\)\)' -or
+	$updateSource -notmatch 'lstrcpyW\(extension, L"\.ps1"\)' -or
+	$updateSource -notmatch 'MoveFileW\(temporary, script\)') {
+	throw 'Updater must rename its unique temporary helper to a .ps1 path before passing it to PowerShell -File.'
+}
 $scriptBuilder = New-Object Text.StringBuilder
 foreach ($literal in [regex]::Matches($updateSource, '(?m)^\s*ps \+= L("(?:\\.|[^"\\])*");')) {
     [void]$scriptBuilder.Append((ConvertFrom-Json -InputObject $literal.Groups[1].Value))
@@ -93,7 +98,7 @@ function Invoke-UpdaterScenario([string]$Scenario, [string]$ZipPath, [string]$Ta
                 ('$zip=' + (ConvertTo-PowerShellLiteral $ZipPath)),
                 ('$target=' + (ConvertTo-PowerShellLiteral $TargetPath)),
                 ('$expectedHash=' + (ConvertTo-PowerShellLiteral $Hash)),
-                ('$expectedVersion=' + (ConvertTo-PowerShellLiteral '1.7.3') + "; `$expectedVersion=`$expectedVersion.TrimStart('v')"),
+                ('$expectedVersion=' + (ConvertTo-PowerShellLiteral '1.7.4') + "; `$expectedVersion=`$expectedVersion.TrimStart('v')"),
                 ('$parentPid=' + [string]$ParentProcessId)
             )
             $scriptLines[$index] = ($dynamicAssignments -join "`r`n") + "`r`n" + $scriptLines[$index]

@@ -10,7 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $label = $Architecture
 $sourceRoot = Join-Path $repoRoot ("dist\TrayS-compat-win11-{0}" -f $label)
 $sourceExe = Join-Path $sourceRoot ("TrayS-compat-win11-{0}.exe" -f $label)
-$packageName = "TrayS_1.7.3_compat_{0}" -f $label
+$packageName = "TrayS_1.7.4_compat_{0}" -f $label
 $packageRoot = Join-Path $repoRoot ("dist\{0}" -f $packageName)
 $archivePath = "$packageRoot.zip"
 
@@ -46,8 +46,8 @@ if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne $expectedMachine) {
 }
 $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($sourceExe)
 if ($version.FileMajorPart -ne 1 -or $version.FileMinorPart -ne 7 -or
-    $version.FileBuildPart -ne 3 -or $version.FilePrivatePart -ne 0) {
-    throw "Executable version does not match the 1.7.3 compatibility package: $($version.FileVersion)"
+	$version.FileBuildPart -ne 4 -or $version.FilePrivatePart -ne 0) {
+    throw "Executable version does not match the 1.7.4 compatibility package: $($version.FileVersion)"
 }
 
 if ((Test-Path -LiteralPath $packageRoot) -or (Test-Path -LiteralPath $archivePath)) {
@@ -62,7 +62,7 @@ foreach ($name in @('README.md', 'COMPATIBILITY.md', 'MEMORY_AUDIT.md')) {
 }
 @(
     'TrayS maintained compatibility package',
-    'Version: 1.7.3',
+    'Version: 1.7.4',
     ("Architecture: {0}" -f $label),
     'Build: native Win32/LLVM-MinGW static runtime',
     'This native compatibility build omits the C++/CLI LibreHardwareMonitor wrapper and kernel driver files.',

@@ -22,11 +22,11 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 本仓库来自上游项目 [cgbsmy/TrayS](https://github.com/cgbsmy/TrayS) 的 fork，由 [Rhongomiant1227/TrayS](https://github.com/Rhongomiant1227/TrayS) 继续维护。上游版本已经比较老，面对新一代 AMD 平台、混合显卡、Windows 11 Shell 和现代安全软件时，容易出现兼容性或告警问题；本 fork 的目标是保留 TrayS 的轻巧体验，同时把高风险、过时和容易误伤系统的路径收紧。
 
-当前维护版本：**TrayS 1.7.3**
+当前维护版本：**TrayS 1.7.4**
 
-1.7 修复自动更新时旧程序退出后没有替换新版本的问题；1.7.1 在更新时会一并暂存、校验并替换温度监控运行库，失败时恢复原有文件。1.7.2 补充 CPU 温度权限提示并优先使用 CPU 封装传感器。1.7.3 增加一次授权的 CPU 温度后台读取；无有效读数时显示 `--`，不再伪装成 `0°C`。
+1.7 修复自动更新时旧程序退出后没有替换新版本的问题；1.7.1 在更新时会一并暂存、校验并替换温度监控运行库，失败时恢复原有文件。1.7.2 补充 CPU 温度权限提示并优先使用 CPU 封装传感器。1.7.3 增加一次授权的 CPU 温度后台读取；无有效读数时显示 `--`，不再伪装成 `0°C`。1.7.4 修复 PowerShell 升级脚本使用错误文件扩展名而导致更新包已下载但未应用的问题。
 
-旧版 1.5/1.6 不建议继续下载或使用：旧更新器可能在点击更新后退出，但没有完成新版本替换。1.5 用户请先手动安装 1.7，之后即可使用修复后的自动更新。
+旧版 1.5/1.6/1.7.0–1.7.3 不建议继续下载或使用。1.7.0–1.7.3 的更新器会把辅助脚本以 `.tmp` 扩展名交给 PowerShell，导致更新包下载后没有应用；这些版本需要手动安装 1.7.4 一次，之后才可使用修复后的自动更新。1.5/1.6 用户也应直接安装 1.7.4。
 
 ## ✨ 现在有什么不一样？
 
@@ -71,8 +71,8 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 更新流程会从固定的 GitHub HTTPS API 查询最新 Release，严格选择当前版本和架构对应的资产，例如：
 
 ```text
-TrayS_1.7.3_x64.zip
-TrayS_1.7.3_x86.zip
+TrayS_1.7.4_x64.zip
+TrayS_1.7.4_x86.zip
 ```
 
 下载包在安装前会检查 Release digest、本地 SHA-256、版本资源和 PE 架构。程序会先退出，再由临时 helper 完成替换并重启；失败时恢复旧 EXE 和所有已替换的监控运行库。更新过程不打开浏览器，也不调用第三方下载器。
@@ -92,7 +92,7 @@ TrayS.dat             # 原有设置，保持旧结构兼容
 TrayS.update.dat      # 更新开关，默认不存在即视为开启
 ```
 
-如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`，不要为了绕过告警而关闭系统防护。1.7.3 包含 LHM 0.9.6 用户态程序集及依赖，但不包含 WinRing0、PawnIO 驱动、Ols 或 `.sys` 驱动文件。9955HX 等 Ryzen 温度传感器需要用户另行安装 [官方 PawnIO](https://github.com/namazso/PawnIO.Setup/releases)，在 TrayS 设置中勾选“显示温度”并点击“授权一次”。UAC 只在安装后台读取程序时出现一次；托盘界面仍以普通权限启动，登录任务启动传感器程序时不再提示。TrayS 不修改 PawnIO 的访问控制。随包附带第三方许可和源码链接。
+如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`，不要为了绕过告警而关闭系统防护。1.7.4 包含 LHM 0.9.6 用户态程序集及依赖，但不包含 WinRing0、PawnIO 驱动、Ols 或 `.sys` 驱动文件。9955HX 等 Ryzen 温度传感器需要用户另行安装 [官方 PawnIO](https://github.com/namazso/PawnIO.Setup/releases)，在 TrayS 设置中勾选“显示温度”并点击“授权一次”。UAC 只在安装后台读取程序时出现一次；托盘界面仍以普通权限启动，登录任务启动传感器程序时不再提示。TrayS 不修改 PawnIO 的访问控制。随包附带第三方许可和源码链接。
 
 ## 🧰 从源码构建
 
@@ -130,13 +130,13 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
   -Platform x64 -Configuration Release `
-  -PackageName TrayS_1.7.3_x64 -Force
+  -PackageName TrayS_1.7.4_x64 -Force
 
 # x86
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
   -Platform Win32 -Configuration Release `
-  -PackageName TrayS_1.7.3_x86 -Force
+  -PackageName TrayS_1.7.4_x86 -Force
 ```
 
 标准包包含 TrayS EXE、LHM 0.9.6 的 x86/x64 对应运行程序集、必要依赖、兼容性说明和第三方许可。包内没有驱动文件；TrayS 只在已安装且可访问 PawnIO 时加载 LHM。构建脚本不会把 `.buildtools`、`Bin` 中间文件、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 驱动打进去。

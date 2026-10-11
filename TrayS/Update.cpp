@@ -751,6 +751,40 @@ static BOOL GrantUpdateHelperReadAccess(LPCWSTR path)
 	return success;
 }
 
+static BOOL CreatePowerShellScriptPath(LPCWSTR tempPath, WCHAR* script, DWORD scriptChars)
+{
+	if (!tempPath || !script || scriptChars == 0)
+		return FALSE;
+	script[0] = L'\0';
+	WCHAR temporary[MAX_PATH] = {};
+	if (GetTempFileNameW(tempPath, L"TrS", 0, temporary) == 0)
+		return FALSE;
+	if ((DWORD)lstrlenW(temporary) + 1 > scriptChars)
+	{
+		DeleteFileW(temporary);
+		return FALSE;
+	}
+	lstrcpyW(script, temporary);
+	WCHAR* extension = wcsrchr(script, L'.');
+	if (!extension || lstrcmpiW(extension, L".tmp") != 0)
+	{
+		DeleteFileW(temporary);
+		script[0] = L'\0';
+		return FALSE;
+	}
+	// Windows PowerShell rejects -File paths unless they end in .ps1.
+	// GetTempFileNameW creates the unique placeholder as .tmp, so rename that
+	// placeholder before writing the script rather than passing an invalid path.
+	lstrcpyW(extension, L".ps1");
+	if (!MoveFileW(temporary, script))
+	{
+		DeleteFileW(temporary);
+		script[0] = L'\0';
+		return FALSE;
+	}
+	return TRUE;
+}
+
 static BOOL LaunchPowerShellUpdate(LPCWSTR zipPath, LPCWSTR targetPath, LPCWSTR expectedHash,
 	LPCWSTR expectedVersion, DWORD parentProcessId)
 {
@@ -761,7 +795,7 @@ static BOOL LaunchPowerShellUpdate(LPCWSTR zipPath, LPCWSTR targetPath, LPCWSTR 
 	if (tempLength == 0 || tempLength >= ARRAYSIZE(tempPath))
 		return FALSE;
 	WCHAR script[MAX_PATH] = {};
-	if (GetTempFileNameW(tempPath, L"TrS", 0, script) == 0)
+	if (!CreatePowerShellScriptPath(tempPath, script, ARRAYSIZE(script)))
 		return FALSE;
 
 	std::wstring ps;
