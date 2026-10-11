@@ -23,7 +23,11 @@ static void ClearNetworkSnapshotUnlocked();
 static void ClearProcessSnapshotUnlocked();
 static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError);
 static BOOL IsCpuSensorBrokerTaskInstalled();
+static BOOL StartCpuSensorBrokerTaskIfInstalled();
+static void MaybeRestartCpuSensorBroker();
 static BOOL LaunchCpuSensorBrokerSetup(HWND owner);
+static BOOL QueryCpuSensorTaskBatteryPolicy(const std::wstring& taskName, BOOL* needsRepair);
+static BOOL ConfigureCpuSensorTaskPowerSettings(const std::wstring& taskName);
 
 struct CpuSensorBrokerSharedState
 {
@@ -32,10 +36,30 @@ struct CpuSensorBrokerSharedState
 	volatile LONG lastError;
 	volatile LONG sampleTick;
 };
+
+static LONG ReadCpuSensorStateAcquire(volatile LONG const* source)
+{
+	LONG value = *source;
+#if defined(_MSC_VER)
+	MemoryBarrier();
+#else
+	__sync_synchronize();
+#endif
+	return value;
+}
+
+static LONG ReadCpuSensorStateRelaxed(volatile LONG const* source)
+{
+	return *source;
+}
+
 static BOOL g_runningCpuSensorBroker = FALSE;
 static BOOL g_cpuSensorBrokerSetupInProgress = FALSE;
 static HANDLE g_cpuSensorBrokerSetupProcess = NULL;
 static BOOL g_cpuSensorBrokerAutoPromptAttempted = FALSE;
+static BOOL g_cpuSensorBrokerTaskNeedsRepair = FALSE;
+static LONG g_cpuSensorBrokerTraceTick = 0;
+static LONG g_cpuSensorBrokerRestartTick = 0;
 
 // Network providers are normally trusted Windows components, but adapter
 // enumeration is an externally supplied, variable-sized data boundary. Keep
@@ -1700,6 +1724,11 @@ int GetCpuTemp(DWORD Core, DWORD* secondaryTemperature = NULL, DWORD* hddTempera
 		DWORD brokerError = ERROR_SUCCESS;
 		if (TryReadCpuSensorBrokerState(&brokerTemperature, &brokerError) && brokerTemperature != 0)
 			return brokerTemperature <= INT_MAX ? (int)brokerTemperature : 0;
+		// An installed broker can disappear independently of the tray process
+		// (for example after a missed logon trigger or a transient LHM failure).
+		// Restart it in the background without asking for elevation again. The
+		// restart is throttled and never replaces the explicit one-time UAC path.
+		MaybeRestartCpuSensorBroker();
 	}
 	// Prefer the CPU's own package sensor when the managed backend is available.
 	// ACPI thermal zones are a fallback and may describe a different component.
@@ -1733,6 +1762,24 @@ static void PublishTemperatureSample(DWORD cpuTemperature, DWORD secondaryTemper
 {
 	if (!TrayData)
 		return;
+	// Restarting the protected broker can take a few seconds while LHM opens
+	// the CPU backend. Keep the last good CPU value during that bounded gap so
+	// a transient task restart does not flash the display back to "--". The
+	// value expires after 15 seconds, after which a genuinely unavailable
+	// sensor is shown as unavailable again.
+	static DWORD lastValidCpuTemperature = 0;
+	static DWORD lastValidCpuTick = 0;
+	const DWORD now = GetTickCount();
+	if (cpuTemperature != 0)
+	{
+		lastValidCpuTemperature = cpuTemperature;
+		lastValidCpuTick = now;
+	}
+	else if (lastValidCpuTemperature != 0 && lastValidCpuTick != 0 &&
+		static_cast<DWORD>(now - lastValidCpuTick) <= 15000)
+	{
+		cpuTemperature = lastValidCpuTemperature;
+	}
 	// Publish only after every provider has finished sampling. The paint thread
 	// reads this shared structure concurrently; clearing it before a slow sensor
 	// call made the display alternate between a valid reading and "--" each poll.
@@ -1742,6 +1789,15 @@ static void PublishTemperatureSample(DWORD cpuTemperature, DWORD secondaryTemper
 		static_cast<LONG>(secondaryTemperature));
 	InterlockedExchange(reinterpret_cast<volatile LONG*>(&TrayData->iHddTemperature),
 		static_cast<LONG>(hddTemperature));
+	static LONG lastPublishedTemperatureLogTick = 0;
+	LONG logTick = static_cast<LONG>(now);
+	LONG previous = InterlockedCompareExchange(&lastPublishedTemperatureLogTick, logTick, 0);
+	if (previous == 0 || static_cast<DWORD>(logTick - previous) >= 10000)
+	{
+		InterlockedExchange(&lastPublishedTemperatureLogTick, logTick);
+		TraySRuntimeLogFormat(L"CPU temperature: published tray sample cpu=%lu secondary=%lu hdd=%lu",
+			cpuTemperature, secondaryTemperature, hddTemperature);
+	}
 }
 //////////////////////////////////////////////////载入温度DLL
 static DWORD g_pawnIoProbeError = ERROR_SUCCESS;
@@ -1814,6 +1870,8 @@ static void UpdateCpuTemperatureStatus(HWND dialog)
 	{
 		if (brokerHasFreshSample && brokerTemperature != 0)
 			status = L"CPU：硬件已读";
+		else if (brokerTaskInstalled && g_cpuSensorBrokerTaskNeedsRepair)
+			status = L"CPU：需修复一次";
 		else if (brokerTaskInstalled && brokerHasFreshSample &&
 			(brokerError == ERROR_FILE_NOT_FOUND || brokerError == ERROR_PATH_NOT_FOUND))
 			status = L"CPU：需安装 PawnIO";
@@ -1838,10 +1896,12 @@ static void UpdateCpuTemperatureStatus(HWND dialog)
 	}
 	ReleaseSRWLockShared(&g_temperatureLock);
 	SetDlgItemTextW(dialog, IDC_LABEL_CPU_TEMPERATURE_STATUS, status);
+	const BOOL brokerNeedsRepair = brokerTaskInstalled && g_cpuSensorBrokerTaskNeedsRepair;
 	SetDlgItemTextW(dialog, IDC_BUTTON_CPU_TEMPERATURE_ENABLE,
-		brokerTaskInstalled ? L"已授权" : (g_cpuSensorBrokerSetupInProgress ? L"授权中..." : L"授权一次"));
+		brokerNeedsRepair ? L"修复一次" :
+		(brokerTaskInstalled ? L"已授权" : (g_cpuSensorBrokerSetupInProgress ? L"授权中..." : L"授权一次")));
 	EnableWindow(GetDlgItem(dialog, IDC_BUTTON_CPU_TEMPERATURE_ENABLE),
-		!brokerTaskInstalled && !g_cpuSensorBrokerSetupInProgress);
+		(!brokerTaskInstalled || brokerNeedsRepair) && !g_cpuSensorBrokerSetupInProgress);
 	if (g_cpuSensorBrokerSetupInProgress)
 		SetTimer(dialog, 4, 1000, NULL);
 }
@@ -2320,7 +2380,42 @@ static BOOL IsCpuSensorBrokerTaskInstalled()
 	if (!GetCurrentUserSidString(&sid) ||
 		!GetCpuSensorBrokerNames(sid, &mapName, &mutexName, &taskName, NULL))
 		return FALSE;
-	return RunSchtasksCommand(L"/Query /TN " + QuoteWindowsArgument(taskName));
+	if (!RunSchtasksCommand(L"/Query /TN " + QuoteWindowsArgument(taskName)))
+	{
+		g_cpuSensorBrokerTaskNeedsRepair = FALSE;
+		return FALSE;
+	}
+	// Older releases created the task with the default battery policy, which
+	// stops the broker as soon as a laptop switches to battery power. Detect that
+	// state so the one-time elevated setup can repair it during an upgrade.
+	BOOL needsRepair = FALSE;
+	if (!QueryCpuSensorTaskBatteryPolicy(taskName, &needsRepair))
+		needsRepair = TRUE;
+	g_cpuSensorBrokerTaskNeedsRepair = needsRepair;
+	return TRUE;
+}
+
+static BOOL StartCpuSensorBrokerTaskIfInstalled()
+{
+	std::wstring sid, taskName;
+	if (!GetCurrentUserSidString(&sid) ||
+		!GetCpuSensorBrokerNames(sid, NULL, NULL, &taskName, NULL))
+		return FALSE;
+	if (!IsCpuSensorBrokerTaskInstalled())
+		return FALSE;
+	// Starting an existing per-user task is allowed without elevating the tray
+	// process. This repairs the common upgrade state where the task survived but
+	// its logon trigger was missed, or the broker exited after a transient LHM
+	// failure. A separate migration path handles the old battery policy and is
+	// the only path that can request UAC.
+	BOOL started = RunSchtasksCommand(L"/Run /TN " + QuoteWindowsArgument(taskName));
+	if (started)
+		TraySRuntimeLogFormat(L"CPU temperature: requested existing broker task, name=%ls",
+			taskName.c_str());
+	else
+		TraySRuntimeLogFormat(L"CPU temperature: could not start existing broker task, name=%ls",
+			taskName.c_str());
+	return started;
 }
 
 static BOOL SetProtectedCpuSensorPathSecurity(const std::wstring& path,
@@ -2392,6 +2487,138 @@ static BOOL IsProcessElevated()
 		elevation.TokenIsElevated != 0;
 	CloseHandle(token);
 	return elevated;
+}
+
+static BOOL QueryCpuSensorTaskBatteryPolicy(const std::wstring& taskName, BOOL* needsRepair)
+{
+	if (!needsRepair)
+		return FALSE;
+	*needsRepair = FALSE;
+	static const CLSID taskSchedulerClsid = {
+		0x0f87369f, 0xa4e5, 0x4cfc, { 0xbd, 0x3e, 0x73, 0xe6, 0x15, 0x45, 0x72, 0xdd }
+	};
+	HRESULT initResult = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE)
+		return FALSE;
+	BOOL mustUninitialize = SUCCEEDED(initResult);
+	ITaskService* service = NULL;
+	ITaskFolder* root = NULL;
+	IRegisteredTask* task = NULL;
+	ITaskDefinition* definition = NULL;
+	ITaskSettings* settings = NULL;
+	VARIANT_BOOL disallowStartIfOnBatteries = VARIANT_FALSE;
+	VARIANT_BOOL stopIfGoingOnBatteries = VARIANT_FALSE;
+	HRESULT hr = CoCreateInstance(taskSchedulerClsid, NULL, CLSCTX_INPROC_SERVER,
+		__uuidof(ITaskService), reinterpret_cast<void**>(&service));
+	if (SUCCEEDED(hr))
+	{
+		VARIANT empty;
+		VariantInit(&empty);
+		hr = service->Connect(empty, empty, empty, empty);
+		if (SUCCEEDED(hr))
+		{
+			BSTR rootPath = SysAllocString(L"\\");
+			hr = rootPath ? service->GetFolder(rootPath, &root) : E_OUTOFMEMORY;
+			if (rootPath) SysFreeString(rootPath);
+		}
+		if (SUCCEEDED(hr))
+		{
+			std::wstring qualifiedTaskName = L"\\" + taskName;
+			BSTR taskPath = SysAllocString(qualifiedTaskName.c_str());
+			hr = taskPath ? root->GetTask(taskPath, &task) : E_OUTOFMEMORY;
+			if (taskPath) SysFreeString(taskPath);
+		}
+		if (SUCCEEDED(hr))
+			hr = task->get_Definition(&definition);
+		if (SUCCEEDED(hr))
+			hr = definition->get_Settings(&settings);
+		if (SUCCEEDED(hr))
+			hr = settings->get_DisallowStartIfOnBatteries(&disallowStartIfOnBatteries);
+		if (SUCCEEDED(hr))
+			hr = settings->get_StopIfGoingOnBatteries(&stopIfGoingOnBatteries);
+	}
+	if (SUCCEEDED(hr))
+		*needsRepair = disallowStartIfOnBatteries == VARIANT_TRUE ||
+			stopIfGoingOnBatteries == VARIANT_TRUE;
+	if (settings) settings->Release();
+	if (definition) definition->Release();
+	if (task) task->Release();
+	if (root) root->Release();
+	if (service) service->Release();
+	if (mustUninitialize) CoUninitialize();
+	return SUCCEEDED(hr);
+}
+
+static BOOL ConfigureCpuSensorTaskPowerSettings(const std::wstring& taskName)
+{
+	// schtasks.exe does not expose the battery policy switches. Update the
+	// definition through Task Scheduler's COM API so the broker survives a
+	// laptop switching to battery power.
+	static const CLSID taskSchedulerClsid = {
+		0x0f87369f, 0xa4e5, 0x4cfc, { 0xbd, 0x3e, 0x73, 0xe6, 0x15, 0x45, 0x72, 0xdd }
+	};
+	HRESULT initResult = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE)
+		return FALSE;
+	BOOL mustUninitialize = SUCCEEDED(initResult);
+	ITaskService* service = NULL;
+	ITaskFolder* root = NULL;
+	IRegisteredTask* task = NULL;
+	ITaskDefinition* definition = NULL;
+	ITaskSettings* settings = NULL;
+	HRESULT hr = CoCreateInstance(taskSchedulerClsid, NULL, CLSCTX_INPROC_SERVER,
+		__uuidof(ITaskService), reinterpret_cast<void**>(&service));
+	if (SUCCEEDED(hr))
+	{
+		VARIANT empty;
+		VariantInit(&empty);
+		hr = service->Connect(empty, empty, empty, empty);
+		if (SUCCEEDED(hr))
+		{
+			BSTR rootPath = SysAllocString(L"\\");
+			hr = rootPath ? service->GetFolder(rootPath, &root) : E_OUTOFMEMORY;
+			if (rootPath) SysFreeString(rootPath);
+		}
+		if (SUCCEEDED(hr))
+		{
+			std::wstring qualifiedTaskName = L"\\" + taskName;
+			BSTR taskPath = SysAllocString(qualifiedTaskName.c_str());
+			hr = taskPath ? root->GetTask(taskPath, &task) : E_OUTOFMEMORY;
+			if (taskPath) SysFreeString(taskPath);
+		}
+		if (SUCCEEDED(hr))
+			hr = task->get_Definition(&definition);
+		if (SUCCEEDED(hr))
+			hr = definition->get_Settings(&settings);
+		if (SUCCEEDED(hr))
+		{
+			hr = settings->put_DisallowStartIfOnBatteries(VARIANT_FALSE);
+			if (SUCCEEDED(hr))
+				hr = settings->put_StopIfGoingOnBatteries(VARIANT_FALSE);
+		}
+		if (SUCCEEDED(hr))
+		{
+			// IRegisteredTask exposes the definition read-only. Re-register the
+			// modified definition with TASK_UPDATE; the existing principal and
+			// logon settings are retained by Task Scheduler for this operation.
+			VARIANT empty;
+			VariantInit(&empty);
+			std::wstring qualifiedTaskName = L"\\" + taskName;
+			BSTR taskPath = SysAllocString(qualifiedTaskName.c_str());
+			IRegisteredTask* updatedTask = NULL;
+			hr = taskPath ? root->RegisterTaskDefinition(taskPath, definition, TASK_UPDATE,
+				empty, empty, TASK_LOGON_NONE, empty, &updatedTask) : E_OUTOFMEMORY;
+			if (taskPath) SysFreeString(taskPath);
+			if (updatedTask) updatedTask->Release();
+		}
+	}
+	if (settings) settings->Release();
+	if (definition) definition->Release();
+	if (task) task->Release();
+	if (root) root->Release();
+	if (service) service->Release();
+	if (mustUninitialize) CoUninitialize();
+	return SUCCEEDED(hr);
 }
 
 static BOOL RestrictCpuSensorTaskSecurity(const std::wstring& taskName, const std::wstring& sid)
@@ -2515,7 +2742,9 @@ static BOOL InstallCpuSensorBroker(const std::wstring& expectedSid)
 	std::wstring action = QuoteWindowsArgument(installedExe) + L" --cpu-sensor-broker";
 	std::wstring createArguments = L"/Create /F /TN " + QuoteWindowsArgument(taskName) +
 		L" /SC ONLOGON /TR " + QuoteWindowsArgument(action) + L" /RL HIGHEST /IT";
-	if (!RunSchtasksCommand(createArguments) || !RestrictCpuSensorTaskSecurity(taskName, currentSid))
+	if (!RunSchtasksCommand(createArguments) ||
+		!ConfigureCpuSensorTaskPowerSettings(taskName) ||
+		!RestrictCpuSensorTaskSecurity(taskName, currentSid))
 	{
 		RunSchtasksCommand(L"/Delete /F /TN " + QuoteWindowsArgument(taskName));
 		MessageBoxW(NULL,
@@ -2540,7 +2769,7 @@ static BOOL LaunchCpuSensorBrokerSetup(HWND owner)
 	// files. Keep one child process and one consent prompt in flight at a time.
 	if (g_cpuSensorBrokerSetupInProgress)
 		return TRUE;
-	if (IsCpuSensorBrokerTaskInstalled())
+	if (IsCpuSensorBrokerTaskInstalled() && !g_cpuSensorBrokerTaskNeedsRepair)
 		return TRUE;
 	std::wstring sid;
 	if (!GetCurrentUserSidString(&sid))
@@ -2622,10 +2851,77 @@ static BOOL MarkCpuSensorBrokerAutoPromptAttempted()
 	return status == ERROR_SUCCESS;
 }
 
+static BOOL HasCpuSensorBrokerRepairPromptBeenAttempted()
+{
+	HKEY key = NULL;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\TrayS\\CpuSensorBroker",
+		0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+		return FALSE;
+	DWORD attempted = 0;
+	DWORD type = 0;
+	DWORD bytes = sizeof(attempted);
+	LONG status = RegQueryValueExW(key, L"BatteryPolicyRepairPromptAttempted", NULL,
+		&type, reinterpret_cast<LPBYTE>(&attempted), &bytes);
+	RegCloseKey(key);
+	return status == ERROR_SUCCESS && type == REG_DWORD && bytes == sizeof(attempted) && attempted != 0;
+}
+
+static BOOL MarkCpuSensorBrokerRepairPromptAttempted()
+{
+	HKEY key = NULL;
+	DWORD disposition = 0;
+	if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\TrayS\\CpuSensorBroker",
+		0, NULL, 0, KEY_SET_VALUE, NULL, &key, &disposition) != ERROR_SUCCESS)
+		return FALSE;
+	UNREFERENCED_PARAMETER(disposition);
+	DWORD attempted = 1;
+	LONG status = RegSetValueExW(key, L"BatteryPolicyRepairPromptAttempted", 0,
+		REG_DWORD, reinterpret_cast<const BYTE*>(&attempted), sizeof(attempted));
+	RegCloseKey(key);
+	return status == ERROR_SUCCESS;
+}
+
 static BOOL TryAutoLaunchCpuSensorBrokerSetup(HWND owner)
 {
-	if (g_cpuSensorBrokerAutoPromptAttempted || !TraySave.bMonitorTemperature ||
-		g_pawnIoProbeError != ERROR_ACCESS_DENIED || g_cpuSensorBrokerSetupInProgress)
+	if (!TraySave.bMonitorTemperature || g_pawnIoProbeError != ERROR_ACCESS_DENIED ||
+		g_cpuSensorBrokerSetupInProgress)
+		return FALSE;
+	BOOL taskInstalled = IsCpuSensorBrokerTaskInstalled();
+	if (taskInstalled && g_cpuSensorBrokerTaskNeedsRepair)
+	{
+		// A previous release left the task on the default battery policy. This
+		// migration needs one elevated re-registration, but it is persisted
+		// separately so startup never prompts repeatedly after a decline.
+		if (HasCpuSensorBrokerRepairPromptBeenAttempted())
+		{
+			// A previous consent attempt may have been cancelled or failed. Do
+			// not ask again automatically, but still try to start the existing
+			// task in case the machine is on AC power and it can provide a
+			// reading without migration.
+			(void)StartCpuSensorBrokerTaskIfInstalled();
+			return FALSE;
+		}
+		if (!MarkCpuSensorBrokerRepairPromptAttempted())
+		{
+			TraySRuntimeLog(L"CPU temperature: could not persist the battery-policy repair prompt state; use settings to retry.");
+			return FALSE;
+		}
+		g_cpuSensorBrokerAutoPromptAttempted = TRUE;
+		TraySRuntimeLog(L"CPU temperature: requesting one-time broker repair for battery power.");
+		return LaunchCpuSensorBrokerSetup(owner);
+	}
+	if (taskInstalled)
+	{
+		// Task existence alone is not enough: ONLOGON can be missed when an
+		// upgrade replaces the executable, and Task Scheduler can leave a task
+		// registered but stopped. Starting it is unelevated and idempotent; the
+		// broker's named mutex prevents duplicate readers.
+		(void)StartCpuSensorBrokerTaskIfInstalled();
+		g_cpuSensorBrokerAutoPromptAttempted = TRUE;
+		(void)MarkCpuSensorBrokerAutoPromptAttempted();
+		return FALSE;
+	}
+	if (g_cpuSensorBrokerAutoPromptAttempted)
 		return FALSE;
 	BOOL promptAlreadyAttempted = HasCpuSensorBrokerAutoPromptBeenAttempted();
 	if (promptAlreadyAttempted)
@@ -2633,7 +2929,6 @@ static BOOL TryAutoLaunchCpuSensorBrokerSetup(HWND owner)
 		g_cpuSensorBrokerAutoPromptAttempted = TRUE;
 		return FALSE;
 	}
-	BOOL taskInstalled = IsCpuSensorBrokerTaskInstalled();
 	if (!ShouldAutoLaunchCpuSensorBrokerSetup(TraySave.bMonitorTemperature,
 		g_pawnIoProbeError, taskInstalled, g_cpuSensorBrokerSetupInProgress,
 		promptAlreadyAttempted))
@@ -2664,23 +2959,54 @@ static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError)
 	std::wstring sid, mapName, mutexName;
 	if (!GetCurrentUserSidString(&sid) ||
 		!GetCpuSensorBrokerNames(sid, &mapName, &mutexName, NULL, NULL))
+	{
+		TraySRuntimeLog(L"CPU temperature: cannot resolve the current user's broker mapping name.");
 		return FALSE;
+	}
 	HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapName.c_str());
 	if (!mapping)
+	{
+		static LONG lastErrorLogTick = 0;
+		LONG now = static_cast<LONG>(GetTickCount());
+		LONG previous = InterlockedCompareExchange(&lastErrorLogTick, now, 0);
+		if (previous == 0 || static_cast<DWORD>(now - previous) >= 10000)
+		{
+			InterlockedExchange(&lastErrorLogTick, now);
+			DWORD mappingError = GetLastError();
+			TraySRuntimeLogFormat(L"CPU temperature: broker mapping unavailable, error=%lu name=%ls",
+				mappingError, mapName.c_str());
+		}
 		return FALSE;
+	}
 	CpuSensorBrokerSharedState* state = static_cast<CpuSensorBrokerSharedState*>(
 		MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(CpuSensorBrokerSharedState)));
 	if (!state)
 	{
+		TraySRuntimeLogFormat(L"CPU temperature: broker mapping view failed, error=%lu",
+			GetLastError());
 		CloseHandle(mapping);
 		return FALSE;
 	}
-	LONG ready = InterlockedCompareExchange(const_cast<LONG*>(&state->ready), 0, 0);
-	LONG tick = InterlockedCompareExchange(const_cast<LONG*>(&state->sampleTick), 0, 0);
-	LONG temperature = InterlockedCompareExchange(const_cast<LONG*>(&state->temperatureC), 0, 0);
-	LONG error = InterlockedCompareExchange(const_cast<LONG*>(&state->lastError), 0, 0);
+	// The tray opens the mapping read-only. InterlockedCompareExchange is not a
+	// read primitive: even with an unchanged compare value it performs a write
+	// access check and crashes on a read-only view. Use acquire loads instead;
+	// the broker publishes each 32-bit field with InterlockedExchange and sets
+	// ready last, so reading ready with acquire gives the preceding fields a
+	// consistent publication barrier without requiring FILE_MAP_WRITE.
+	LONG tick = ReadCpuSensorStateAcquire(&state->sampleTick);
+	LONG temperature = ReadCpuSensorStateRelaxed(&state->temperatureC);
+	LONG error = ReadCpuSensorStateRelaxed(&state->lastError);
+	LONG ready = ReadCpuSensorStateAcquire(&state->ready);
 	DWORD age = GetTickCount() - static_cast<DWORD>(tick);
 	BOOL fresh = ready != 0 && tick != 0 && age <= 5000;
+	LONG traceTick = static_cast<LONG>(GetTickCount());
+	LONG previousTraceTick = InterlockedCompareExchange(&g_cpuSensorBrokerTraceTick, traceTick, 0);
+	if (previousTraceTick == 0 || static_cast<DWORD>(traceTick - previousTraceTick) >= 10000)
+	{
+		InterlockedExchange(&g_cpuSensorBrokerTraceTick, traceTick);
+		TraySRuntimeLogFormat(L"CPU temperature: broker state ready=%ld temp=%ld error=%ld age=%lu fresh=%d",
+			ready, temperature, error, age, fresh);
+	}
 	if (fresh)
 	{
 		if (temperatureC && temperature > 0)
@@ -2691,6 +3017,22 @@ static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError)
 	UnmapViewOfFile(state);
 	CloseHandle(mapping);
 	return fresh;
+}
+
+static void MaybeRestartCpuSensorBroker()
+{
+	if (g_runningCpuSensorBroker)
+		return;
+	LONG now = static_cast<LONG>(GetTickCount());
+	LONG previous = InterlockedCompareExchange(&g_cpuSensorBrokerRestartTick, now, 0);
+	if (previous != 0 && static_cast<DWORD>(now - previous) < 5000)
+		return;
+	InterlockedExchange(&g_cpuSensorBrokerRestartTick, now);
+	// Do not attempt a repair from the sampling thread. Re-registering an old
+	// task requires the one-time elevated settings flow, which is initiated on
+	// the UI thread. Starting an already-correct task is a normal user action.
+	if (IsCpuSensorBrokerTaskInstalled() && !g_cpuSensorBrokerTaskNeedsRepair)
+		(void)StartCpuSensorBrokerTaskIfInstalled();
 }
 
 static int RunCpuSensorBrokerMode()
