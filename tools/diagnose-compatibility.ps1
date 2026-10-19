@@ -158,7 +158,7 @@ foreach ($payload in $payloads) {
 $msbuild = Get-Command msbuild.exe -ErrorAction SilentlyContinue
 if ($msbuild) { Write-Output ("MSBuild: {0}" -f $msbuild.Source) }
 else {
-    $localMsbuild = Join-Path $repoRoot '.buildtools\MSBuild\Current\Bin\MSBuild.exe'
+    $localMsbuild = Join-Path $repoRoot '.buildtools\vs\MSBuild\Current\Bin\MSBuild.exe'
     if (Test-Path -LiteralPath $localMsbuild -PathType Leaf) { Write-Output ("MSBuild: {0}" -f $localMsbuild) }
     else { Write-Output 'MSBuild: not found (run install-build-tools.ps1 from elevated PowerShell)' }
 }

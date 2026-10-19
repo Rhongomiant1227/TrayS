@@ -3,7 +3,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$installPath = Join-Path $repoRoot '.buildtools'
+$installPath = Join-Path $repoRoot '.buildtools\vs'
 $logPath = Join-Path $PSScriptRoot 'build-tools-install.log'
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -24,8 +24,7 @@ $override = @(
     '--nocache',
     '--installPath', $installPath,
     '--add', 'Microsoft.VisualStudio.Workload.VCTools',
-    '--includeRecommended',
-    '--add', 'Microsoft.VisualStudio.Component.VC.v143.CLI.Support'
+    '--includeRecommended'
 ) -join ' '
 
 Write-Output "Installing Microsoft Visual Studio 2022 Build Tools to $installPath"

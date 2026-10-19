@@ -101,10 +101,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-compatibili
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 ```
 
-默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.6_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.6_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
+默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.7_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.7_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
 
 启用温度监控并检测到 PawnIO 拒绝访问时，TrayS 会自动发起一次授权请求。尝试状态保存在当前用户注册表中，因此拒绝后不会在每次启动重复提示；用户仍可从设置页手动重试。温度采样会先在局部变量中完成，再发布整轮读数，避免 UI 在读取期间显示短暂的 `--`。
 
-如果本机没有 MSBuild，可以把 VS 2022 Build Tools 安装到仓库内的 `.buildtools` 目录。构建完成后，先运行 `tools\uninstall-build-tools.ps1`，让官方 Visual Studio Installer 完成卸载并清理该目录，再删除整个仓库目录；直接删除 `.buildtools` 会留下安装器注册信息和缓存，不应作为卸载步骤。
+如果本机没有 MSBuild，可以把 VS 2022 Build Tools 安装到仓库内的 `.buildtools\vs` 目录，LLVM-MinGW 和 .NET Framework 引用程序集也放在 `.buildtools` 下。构建完成后，先运行 `tools\uninstall-build-tools.ps1`，让官方 Visual Studio Installer 完成卸载并清理该目录，再删除整个仓库目录；直接删除 `.buildtools` 会留下安装器注册信息和缓存，不应作为卸载步骤。
 
 项目内的 `tools\install-build-tools.ps1` 会通过微软官方 `winget` 源安装所需的 C++、MSVC v143、Windows SDK 与 C++/CLI 组件，并使用 `--nocache` 减少安装包缓存。该脚本必须在管理员 PowerShell 中运行。

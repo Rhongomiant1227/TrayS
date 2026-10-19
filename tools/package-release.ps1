@@ -22,7 +22,7 @@ if ([string]::IsNullOrWhiteSpace($PackageName)) {
     # Keep the product name in the archive so an extracted release is
     # immediately recognizable instead of looking like an anonymous legacy
     # `_x64_ALL_...` build.
-    $PackageName = "TrayS_1.7.6_${platformLabel}"
+    $PackageName = "TrayS_1.7.7_${platformLabel}"
 }
 
 if ($PackageName -eq '.' -or $PackageName -eq '..' -or
@@ -57,7 +57,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $msbuildPath = $null
-$localMsbuildPath = Join-Path $repoRoot '.buildtools\MSBuild\Current\Bin\MSBuild.exe'
+$localMsbuildPath = Join-Path $repoRoot '.buildtools\vs\MSBuild\Current\Bin\MSBuild.exe'
 if (Test-Path -LiteralPath $localMsbuildPath -PathType Leaf) {
     # Prefer the repository-local copy even when another MSBuild is on PATH.
     # This keeps the build reproducible and makes the tool removable with the
@@ -97,7 +97,7 @@ Then run this script again from the repository root.
 # the Developer Command Prompt normally supplies. Import vcvarsall so the
 # local xcopy MSBuild and a machine-wide MSBuild use the same toolset paths.
 $vcVarsCandidates = @(
-    (Join-Path $repoRoot '.buildtools\VC\Auxiliary\Build\vcvarsall.bat'),
+    (Join-Path $repoRoot '.buildtools\vs\VC\Auxiliary\Build\vcvarsall.bat'),
     'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat',
     'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat',
     'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat',
@@ -138,13 +138,30 @@ if ($vcVarsPath) {
     }
 }
 
-# C++/CLI projects link against MSCOREE.lib. Use the checked-in architecture-
-# specific import library: x86 must resolve the decorated stdcall symbol to the
+# C++/CLI projects link against MSCOREE.lib. Generate the small architecture-
+# specific import library on demand so a fresh checkout does not need to track
+# a binary tool artifact. x86 must resolve the decorated stdcall symbol to the
 # undecorated `_CorDllMain` export present in Windows' mscoree.dll.
 $mscoreeLib = Join-Path $repoRoot ("tools\mscoree-{0}.lib" -f $machine)
 $projectMscoreeLib = Join-Path $repoRoot 'OpenHardwareMonitorApi\mscoree.lib'
 if (-not (Test-Path -LiteralPath $mscoreeLib -PathType Leaf)) {
-    throw "Architecture-specific MSCOREE import library is missing: $mscoreeLib"
+    $mscoreeDef = Join-Path $repoRoot ("tools\mscoree-{0}.def" -f $machine)
+    if (-not (Test-Path -LiteralPath $mscoreeDef -PathType Leaf)) {
+        throw "Architecture-specific MSCOREE definition is missing: $mscoreeDef"
+    }
+    if ($machine -eq 'x86') {
+        $dllTool = Get-ChildItem -LiteralPath (Join-Path $repoRoot '.buildtools\llvm-mingw') -Recurse -Filter 'i686-w64-mingw32-dlltool.exe' -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+        if (-not $dllTool) {
+            throw "The x86 import-library generator is missing: $mscoreeLib"
+        }
+        & $dllTool -d $mscoreeDef -l $mscoreeLib --kill-at
+    } else {
+        & lib.exe /def:$mscoreeDef /machine:x64 /out:$mscoreeLib /name:mscoree.dll
+    }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $mscoreeLib -PathType Leaf)) {
+        throw "Could not generate the architecture-specific MSCOREE import library: $mscoreeLib"
+    }
 }
 Copy-Item -LiteralPath $mscoreeLib -Destination $projectMscoreeLib -Force
 

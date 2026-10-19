@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($InstallPath)) {
-    $InstallPath = Join-Path (Split-Path -Parent $PSScriptRoot) '.buildtools'
+    $InstallPath = Join-Path (Split-Path -Parent $PSScriptRoot) '.buildtools\vs'
 }
 
 if (-not (Test-Path -LiteralPath $InstallPath)) {

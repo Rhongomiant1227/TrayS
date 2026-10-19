@@ -1,5 +1,5 @@
 LIBRARY mscoree.dll
 EXPORTS
-    _CorDllMain@12
-    _CorExeMain@0
-    _CorExeMain2@0
+    _CorDllMain@12=_CorDllMain
+    _CorExeMain@0=_CorExeMain
+    _CorExeMain2@0=_CorExeMain2
