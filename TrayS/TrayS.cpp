@@ -58,6 +58,10 @@ static BOOL g_cpuSensorBrokerSetupInProgress = FALSE;
 static HANDLE g_cpuSensorBrokerSetupProcess = NULL;
 static BOOL g_cpuSensorBrokerAutoPromptAttempted = FALSE;
 static BOOL g_cpuSensorBrokerTaskNeedsRepair = FALSE;
+// Cached by the bounded Task Scheduler probe. Once a broker task is
+// installed, the unelevated tray must wait for its hardware-only mapping
+// instead of silently falling back to an ACPI ambient/chassis value.
+static BOOL g_cpuSensorBrokerTaskInstalled = FALSE;
 static LONG g_cpuSensorBrokerTraceTick = 0;
 static LONG g_cpuSensorBrokerRestartTick = 0;
 
@@ -1707,7 +1711,8 @@ static DWORD TemperatureForDisplay(float value)
 	return static_cast<DWORD>(value + 0.5f);
 }
 
-int GetCpuTemp(DWORD Core, DWORD* secondaryTemperature = NULL, DWORD* hddTemperature = NULL)
+int GetCpuTemp(DWORD Core, DWORD* secondaryTemperature = NULL, DWORD* hddTemperature = NULL,
+	BOOL allowAcpiFallback = TRUE)
 {
 	UNREFERENCED_PARAMETER(Core);
 	if (secondaryTemperature)
@@ -1722,13 +1727,30 @@ int GetCpuTemp(DWORD Core, DWORD* secondaryTemperature = NULL, DWORD* hddTempera
 	{
 		DWORD brokerTemperature = 0;
 		DWORD brokerError = ERROR_SUCCESS;
-		if (TryReadCpuSensorBrokerState(&brokerTemperature, &brokerError) && brokerTemperature != 0)
-			return brokerTemperature <= INT_MAX ? (int)brokerTemperature : 0;
+		BOOL brokerStateFresh = TryReadCpuSensorBrokerState(&brokerTemperature, &brokerError);
+		if (brokerStateFresh)
+		{
+			// Older broker builds could publish an ACPI fallback together with
+			// ERROR_FILE_NOT_FOUND/ERROR_PATH_NOT_FOUND. Treat that combination as
+			// unavailable too, so upgrading the tray UI takes effect even before the
+			// old broker process has been restarted.
+			if (brokerError == ERROR_FILE_NOT_FOUND || brokerError == ERROR_PATH_NOT_FOUND ||
+				brokerError == ERROR_ACCESS_DENIED)
+				return 0;
+			return brokerTemperature > 0 && brokerTemperature <= INT_MAX ?
+				(int)brokerTemperature : 0;
+		}
 		// An installed broker can disappear independently of the tray process
 		// (for example after a missed logon trigger or a transient LHM failure).
 		// Restart it in the background without asking for elevation again. The
 		// restart is throttled and never replaces the explicit one-time UAC path.
 		MaybeRestartCpuSensorBroker();
+		// Once the protected task exists, an unavailable/stale mapping means the
+		// hardware provider is not ready. Do not replace it with an ACPI thermal
+		// zone, which is often a stable ambient value such as 28 C and is not the
+		// CPU package temperature the user enabled.
+		if (g_cpuSensorBrokerTaskInstalled)
+			return 0;
 	}
 	// Prefer the CPU's own package sensor when the managed backend is available.
 	// ACPI thermal zones are a fallback and may describe a different component.
@@ -1754,7 +1776,13 @@ int GetCpuTemp(DWORD Core, DWORD* secondaryTemperature = NULL, DWORD* hddTempera
 		if (cpuTemperature != 0)
 			return cpuTemperature <= INT_MAX ? (int)cpuTemperature : 0;
 	}
-	return GetAcpiCpuTemperature();
+	// The elevated CPU sensor broker must never publish an ACPI thermal-zone
+	// value as if it were a CPU package reading.  ACPI zones frequently expose
+	// a stable ambient/chassis value (for example 28 C) even when PawnIO/LHM is
+	// unavailable.  Keep that fallback for the normal UI, where it is explicitly
+	// documented as a Windows thermal-zone fallback, but disable it for the
+	// broker's hardware-only publication path.
+	return allowAcpiFallback ? GetAcpiCpuTemperature() : 0;
 }
 
 static void PublishTemperatureSample(DWORD cpuTemperature, DWORD secondaryTemperature,
@@ -2376,6 +2404,7 @@ static BOOL RunSchtasksCommand(const std::wstring& arguments, DWORD timeoutMs = 
 
 static BOOL IsCpuSensorBrokerTaskInstalled()
 {
+	g_cpuSensorBrokerTaskInstalled = FALSE;
 	std::wstring sid, mapName, mutexName, taskName;
 	if (!GetCurrentUserSidString(&sid) ||
 		!GetCpuSensorBrokerNames(sid, &mapName, &mutexName, &taskName, NULL))
@@ -2392,6 +2421,7 @@ static BOOL IsCpuSensorBrokerTaskInstalled()
 	if (!QueryCpuSensorTaskBatteryPolicy(taskName, &needsRepair))
 		needsRepair = TRUE;
 	g_cpuSensorBrokerTaskNeedsRepair = needsRepair;
+	g_cpuSensorBrokerTaskInstalled = TRUE;
 	return TRUE;
 }
 
@@ -3090,7 +3120,10 @@ static int RunCpuSensorBrokerMode()
 	TraySRuntimeLog(L"CPU sensor broker started; tray UI remains unelevated.");
 	for (;;)
 	{
-		int temperature = GetCpuTemp(1);
+		// Broker mode is the privileged LHM/PawnIO path.  Do not let the shared
+		// state become contaminated by a static ACPI thermal-zone value when the
+		// protected sensor device is missing or temporarily unavailable.
+		int temperature = GetCpuTemp(1, NULL, NULL, FALSE);
 		InterlockedExchange(&state->temperatureC, temperature > 0 ? temperature : 0);
 		InterlockedExchange(&state->lastError, static_cast<LONG>(g_pawnIoProbeError));
 		InterlockedExchange(&state->sampleTick, static_cast<LONG>(GetTickCount()));

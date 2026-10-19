@@ -281,9 +281,14 @@ static void TestCpuTemperatureSources()
     Check(GetCpuTemp(1) == 30, "Infinite hardware reading did not fall back to ACPI");
     reviewCpuTemperature = -1.0f;
     Check(GetCpuTemp(1) == 30, "Missing hardware reading did not fall back to ACPI");
+	Check(GetCpuTemp(1, NULL, NULL, FALSE) == 0,
+		"Broker hardware-only path published an ACPI fallback as CPU temperature");
     hOHMA = NULL;
     GetTemperature = NULL;
+	g_runningCpuSensorBroker = TRUE;
     Check(GetCpuTemp(1) == 30, "ACPI-only temperature became unavailable");
+	Check(GetCpuTemp(1, NULL, NULL, FALSE) == 0,
+		"Broker hardware-only path used ACPI when the managed monitor was unavailable");
     hThermalQuery = NULL;
     hThermalCounters[0] = NULL;
     thermalCounterCount = 0;
