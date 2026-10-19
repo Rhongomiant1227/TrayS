@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('x64', 'Win32')]
+    [ValidateSet('x64')]
     [string]$Platform = 'x64',
 
     [ValidateSet('Release', 'Debug')]
@@ -18,11 +18,11 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if ([string]::IsNullOrWhiteSpace($PackageName)) {
-    $platformLabel = if ($Platform -eq 'x64') { 'x64' } else { 'x86' }
+    $platformLabel = 'x64'
     # Keep the product name in the archive so an extracted release is
     # immediately recognizable instead of looking like an anonymous legacy
     # `_x64_ALL_...` build.
-    $PackageName = "TrayS_1.7.8_${platformLabel}"
+    $PackageName = "TrayS_1.7.9_${platformLabel}"
 }
 
 if ($PackageName -eq '.' -or $PackageName -eq '..' -or
@@ -39,10 +39,8 @@ foreach ($path in @($packageRoot, $archivePath)) {
         throw "Package output must stay inside dist: $path"
     }
 }
-$machine = if ($Platform -eq 'x64') { 'x64' } else { 'x86' }
-# The solution exposes the 32-bit configuration as x86, while the individual
-# Visual C++ projects retain their historical Win32 platform name.
-$solutionPlatform = if ($Platform -eq 'Win32') { 'x86' } else { $Platform }
+$machine = 'x64'
+$solutionPlatform = $Platform
 
 if (-not (Test-Path -LiteralPath $solutionPath)) {
     throw "Solution file is missing: $solutionPath"
@@ -108,7 +106,7 @@ $vcVarsCandidates = @(
 $vcBuildProperties = @()
 $vcVarsPath = $vcVarsCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 if ($vcVarsPath) {
-    $vcArchitecture = if ($Platform -eq 'x64') { 'x64' } else { 'x86' }
+    $vcArchitecture = 'x64'
     $environmentLines = cmd.exe /d /s /c ('call "{0}" {1} >nul && set' -f $vcVarsPath, $vcArchitecture)
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to initialize the Visual C++ environment: $vcVarsPath"
@@ -140,8 +138,7 @@ if ($vcVarsPath) {
 
 # C++/CLI projects link against MSCOREE.lib. Generate the small architecture-
 # specific import library on demand so a fresh checkout does not need to track
-# a binary tool artifact. x86 must resolve the decorated stdcall symbol to the
-# undecorated `_CorDllMain` export present in Windows' mscoree.dll.
+# a binary tool artifact.
 $mscoreeLib = Join-Path $repoRoot ("tools\mscoree-{0}.lib" -f $machine)
 $projectMscoreeLib = Join-Path $repoRoot 'OpenHardwareMonitorApi\mscoree.lib'
 if (-not (Test-Path -LiteralPath $mscoreeLib -PathType Leaf)) {
@@ -149,16 +146,7 @@ if (-not (Test-Path -LiteralPath $mscoreeLib -PathType Leaf)) {
     if (-not (Test-Path -LiteralPath $mscoreeDef -PathType Leaf)) {
         throw "Architecture-specific MSCOREE definition is missing: $mscoreeDef"
     }
-    if ($machine -eq 'x86') {
-        $dllTool = Get-ChildItem -LiteralPath (Join-Path $repoRoot '.buildtools\llvm-mingw') -Recurse -Filter 'i686-w64-mingw32-dlltool.exe' -ErrorAction SilentlyContinue |
-            Select-Object -First 1 -ExpandProperty FullName
-        if (-not $dllTool) {
-            throw "The x86 import-library generator is missing: $mscoreeLib"
-        }
-        & $dllTool -d $mscoreeDef -l $mscoreeLib --kill-at
-    } else {
-        & lib.exe /def:$mscoreeDef /machine:x64 /out:$mscoreeLib /name:mscoree.dll
-    }
+    & lib.exe /def:$mscoreeDef /machine:x64 /out:$mscoreeLib /name:mscoree.dll
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $mscoreeLib -PathType Leaf)) {
         throw "Could not generate the architecture-specific MSCOREE import library: $mscoreeLib"
     }
@@ -293,7 +281,7 @@ $manifestLines = @(
     ("Configuration: {0}" -f $Configuration),
     ("Built: {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')),
     'LibreHardwareMonitor 0.9.6 is included; TrayS loads it only when the PawnIO device is already installed and accessible.',
-    'TrayS does not install, start, or bundle PawnIO or any kernel driver.',
+    'No kernel driver is embedded. When missing, TrayS can download the official pinned PawnIO 2.2.0 installer after user consent; SHA-256 and Authenticode are verified before an explicit UAC installation.',
     'CPU hardware sensors require the official PawnIO driver and the one-time, per-user CPU sensor broker authorization; the tray UI remains unelevated and the broker starts at logon without another UAC prompt.',
     'This package was produced from the current working tree.'
 )

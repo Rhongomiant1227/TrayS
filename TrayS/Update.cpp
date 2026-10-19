@@ -384,11 +384,7 @@ static int QueryRelease(TRAYS_UPDATE_INFO* info)
 		return 0;
 	WCHAR versionText[32] = {};
 	wsprintfW(versionText, L"%d.%d.%d", latest.major, latest.minor, latest.patch);
-#ifdef _WIN64
 	LPCWSTR architecture = L"x64";
-#else
-	LPCWSTR architecture = L"x86";
-#endif
 	WCHAR expectedName[128] = {};
 	wsprintfW(expectedName, L"TrayS_%s_%s.zip", versionText, architecture);
 	std::string expectedNameUtf8;

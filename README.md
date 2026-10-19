@@ -22,11 +22,11 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 本仓库来自上游项目 [cgbsmy/TrayS](https://github.com/cgbsmy/TrayS) 的 fork，由 [Rhongomiant1227/TrayS](https://github.com/Rhongomiant1227/TrayS) 继续维护。上游版本已经比较老，面对新一代 AMD 平台、混合显卡、Windows 11 Shell 和现代安全软件时，容易出现兼容性或告警问题；本 fork 的目标是保留 TrayS 的轻巧体验，同时把高风险、过时和容易误伤系统的路径收紧。
 
-当前维护版本：**TrayS 1.7.8**
+当前维护版本：**TrayS 1.7.9**。从此版本开始只维护和发布 **x64**，不再提供 32 位 Windows/x86 构建。
 
-1.7 修复自动更新时旧程序退出后没有替换新版本的问题；1.7.1 在更新时会一并暂存、校验并替换温度监控运行库，失败时恢复原有文件。1.7.2 补充 CPU 温度权限提示并优先使用 CPU 封装传感器。1.7.3 增加 CPU 温度后台读取；无有效读数时显示 `--`，不再伪装成 `0°C`。1.7.4 修复更新脚本扩展名错误。1.7.5 修复传感器采样时温度在有效值和 `--` 之间闪烁，并在首次检测到 PawnIO 权限不足时主动请求一次授权。1.7.6 修复旧 CPU broker 任务在升级、登录触发丢失或切换电池时不再运行的问题，并在 broker 短暂重启时保留最近一次有效温度。1.7.7 禁止把 ACPI 环境热区值误报为 CPU Package 温度；没有可用硬件传感器时显示 `--`，设置页显示当前版本号，并修正 x86 C++/CLI 的 mscoree 导入兼容性。1.7.8 修正“已授权”被误显示成“硬件已读”的状态错误，并检测旧版受保护后台程序，在修复时停止旧任务再安全替换。
+1.7.9 增加缺少 PawnIO 时的应用内下载、固定 SHA-256 和 Authenticode 校验，并将正式构建与发布收敛为 x64。此前各 1.7.x 温度、后台和更新修复继续保留。
 
-旧版 1.5/1.6/1.7.0–1.7.3 不建议继续下载或使用。1.7.0–1.7.3 的更新器会把辅助脚本以 `.tmp` 扩展名交给 PowerShell，导致更新包下载后没有应用；这些版本请手动安装 1.7.8。1.7.4–1.7.7 虽修复了部分更新和温度问题，但已有的受保护 CPU 后台程序不会随托盘 EXE 自动更新；升级到 1.7.8 后，若检测到后台程序版本落后，请在设置页点击“修复一次”完成更新。
+旧版 1.5/1.6/1.7.0–1.7.8 不建议继续下载或使用。x64 Windows 用户请安装 1.7.9；历史 x86 Release 仅作为存档，不再维护，也不会有新的 32 位包。
 
 ## ✨ 现在有什么不一样？
 
@@ -34,21 +34,21 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 - 当 PawnIO 已安装、并完成一次 CPU 传感器授权后，受保护目录中的独立后台进程以最高权限读取 LibreHardwareMonitor 0.9.6 硬件传感器；AMD 的 Tctl/Tdie 封装读数优先于核心温度平均值。托盘界面仍以普通权限运行。
 - 普通权限启动、未安装 PawnIO 或硬件读数不可用时，回退到 Windows/ACPI Thermal Zone 的只读 PDH 路径，支持 `High Precision Temperature` 和普通 `Temperature` 计数器。热区可能对应主板或其他部件，因此有 CPU 自身读数时优先显示 CPU 自身读数。
-- 官方 PawnIO 驱动只允许 SYSTEM 和提升权限的管理员访问。开启温度监控后，如果 TrayS 检测到 PawnIO 拒绝访问，会主动请求一次管理员授权，安装只负责传感器读取的后台程序并注册当前用户登录任务；托盘 UI 仍保持普通权限。授权尝试状态会持久保存，不会每次启动都弹出；若用户拒绝，可在设置中手动重试。授权成功后，后续开机不再出现 UAC。TrayS 不修改 PawnIO 驱动权限。
+- 官方 PawnIO 驱动只允许 SYSTEM 和提升权限的管理员访问。开启温度监控后，如果 TrayS 检测到 PawnIO 缺失，设置页会提供“下载安装”，从官方固定地址下载并校验安装器；用户确认并完成 UAC 后才会运行官方安装器。PawnIO 已安装但拒绝访问时，TrayS 会请求一次管理员授权，安装只负责传感器读取的后台程序并注册当前用户登录任务；托盘 UI 仍保持普通权限。授权尝试状态会持久保存，不会每次启动都弹出；若用户拒绝，可在设置中手动重试。TrayS 不修改 PawnIO 驱动权限。
 - 硬件传感器和 ACPI 热区都没有有效读数时显示 `--`，不把 0°C 当作实际温度。
-- 设置页按钮显示“后台已装”只表示后台任务存在；只有收到新鲜、范围有效且没有读取错误的硬件样本时才显示“硬件已读”。如果 PawnIO 设备不存在，状态会明确提示安装 PawnIO。UAC 授权不会替代 PawnIO 驱动安装。
+- 设置页按钮显示“后台已装”只表示后台任务存在；只有收到新鲜、范围有效且没有读取错误的硬件样本时才显示“硬件已读”。如果 PawnIO 设备不存在，状态会明确提示安装 PawnIO，并提供经用户确认后下载、校验和安装的入口。后台授权和 PawnIO 驱动安装是两个独立步骤。
 - 受保护后台程序随主程序升级需要再次授权更新。1.7.8 会检测版本不一致，设置页显示“后台需更新”，并提供“修复一次”按钮。
 - 为保持旧配置兼容，`显示温度` 默认关闭；需要在设置窗口勾选后才会创建温度采样路径和任务栏温度栏。
 - AMD Ryzen、Intel Core/Xeon 等平台只要固件向 Windows 暴露热区，就可以尝试读取；没有热区且没有可用 PawnIO 设备时显示不可用。
 - AMD 显卡使用 ADL 只读温度接口，NVIDIA 显卡使用 NVAPI 只读温度接口；逐卡枚举，混合 AMD+iGPU/NVIDIA、多 NVIDIA 卡或虚拟显示适配器时，单个设备失败不会拖垮其他设备。
 - 风扇、频率、电压、功耗、超频和驱动重载接口不在默认监控路径中。
-- 随包提供的 LHM 0.9.6 只会在 PawnIO 设备已经安装并可访问时加载。TrayS 不安装、不启动或捆绑 PawnIO 驱动，也不再使用 WinRing0；没有 PawnIO 时继续使用 ACPI 路径。
+- 随包提供的 LHM 0.9.6 只会在 PawnIO 设备已经安装并可访问时加载。TrayS 不在发布 ZIP 中捆绑驱动，也不静默安装或修改 PawnIO；缺少 PawnIO 时可在设置页由用户明确同意后下载官方安装器并通过 UAC 安装。TrayS 不再使用 WinRing0；没有 PawnIO 时继续使用 ACPI 路径。
 
 ### 🛡️ 安全边界：少一点“神秘操作”
 
 - 默认以 `asInvoker` 运行，不主动申请管理员权限。
 - 普通启动和普通开机启动都不申请管理员权限。只有启用 CPU 温度监控且 PawnIO 拒绝访问时，TrayS 才会自动申请一次 UAC；后台程序放入受保护的 Program Files 目录，任务仅允许 SYSTEM/管理员修改，当前用户可读取和运行。
-- 不安装服务、不修改 BIOS、不重载 AMD/NVIDIA 显示驱动，也不安装、捆绑或修改 PawnIO 驱动。
+- 不安装服务、不修改 BIOS、不重载 AMD/NVIDIA 显示驱动，也不静默安装、捆绑或修改 PawnIO 驱动；PawnIO 安装只能由用户在设置页确认后启动官方安装器。
 - DLL 从明确的应用目录或 Windows System32 加载，避免当前目录 DLL 劫持。
 - 网络请求使用系统 `winhttp.dll`，限制主机、HTTPS、超时和响应大小；行情与更新失败时保留旧数据或静默降级。
 - 配置和网络、进程、传感器数据边界都做了长度、数量、索引、有限数值和异常检查。
@@ -73,18 +73,14 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 更新流程会从固定的 GitHub HTTPS API 查询最新 Release，严格选择当前版本和架构对应的资产，例如：
 
 ```text
-TrayS_1.7.8_x64.zip
-TrayS_1.7.8_x86.zip
+TrayS_1.7.9_x64.zip
 ```
 
 下载包在安装前会检查 Release digest、本地 SHA-256、版本资源和 PE 架构。程序会先退出，再由临时 helper 完成替换并重启；失败时恢复旧 EXE 和所有已替换的监控运行库。更新过程不打开浏览器，也不调用第三方下载器。
 
 ## 📦 下载和使用
 
-从 [Releases](https://github.com/Rhongomiant1227/TrayS/releases) 选择对应架构：
-
-- 大多数 Intel/AMD 电脑：`TrayS_<版本>_x64.zip`
-- 只有确实运行 32 位 Windows 时：`TrayS_<版本>_x86.zip`
+从 [Releases](https://github.com/Rhongomiant1227/TrayS/releases) 下载 `TrayS_<版本>_x64.zip`，适用于 Intel/AMD 的 x64 Windows 10/11。1.7.9 起不再支持 32 位 Windows 或提供 x86 包；ARM64 不在原生支持范围内。
 
 解压后直接运行 `TrayS.exe` 即可。默认安全包不包含个人配置，配置文件会在程序目录旁按需创建：
 
@@ -94,7 +90,7 @@ TrayS.dat             # 原有设置，保持旧结构兼容
 TrayS.update.dat      # 更新开关，默认不存在即视为开启
 ```
 
-如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`，不要为了绕过告警而关闭系统防护。1.7.8 包含 LHM 0.9.6 用户态程序集及依赖，但不包含 WinRing0、PawnIO 驱动、Ols 或 `.sys` 驱动文件。9955HX 等 Ryzen 温度传感器需要用户另行安装 [官方 PawnIO](https://github.com/namazso/PawnIO.Setup/releases)。启用“显示温度”后，TrayS 会检测访问权限并在需要时主动请求一次授权；托盘界面仍以普通权限启动，登录任务启动传感器程序时不再提示。若拒绝自动授权，可在设置页点击“授权一次”手动重试；升级后如设置页显示“后台需更新”，点击“修复一次”更新受保护后台。TrayS 不修改 PawnIO 的访问控制。随包附带第三方许可和源码链接。
+如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`。1.7.9 包含 x64 LHM 0.9.6 用户态程序集及依赖，不包含 PawnIO 或其他 `.sys` 驱动；缺少 PawnIO 时，启用温度监控会提供“下载安装”，从官方 GitHub 下载固定版本，校验 SHA-256 和 Windows 签名后再请求一次 UAC。
 
 ## 🧰 从源码构建
 
@@ -131,17 +127,12 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 # x64
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
-  -Platform x64 -Configuration Release `
-  -PackageName TrayS_1.7.8_x64 -Force
+  -Platform x64 -Configuration Release
+  -PackageName TrayS_1.7.9_x64 -Force
 
-# x86
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File .\tools\package-release.ps1 `
-  -Platform Win32 -Configuration Release `
-  -PackageName TrayS_1.7.8_x86 -Force
 ```
 
-标准包包含 TrayS EXE、LHM 0.9.6 的 x86/x64 对应运行程序集、必要依赖、兼容性说明和第三方许可。包内没有驱动文件；TrayS 只在已安装且可访问 PawnIO 时加载 LHM。构建脚本不会把 `.buildtools`、`Bin` 中间文件、个人 `TrayS.dat`、WinRing0/Ols/PawnIO 驱动打进去。
+标准包只包含 x64 TrayS EXE、x64 LHM 运行程序集、必要依赖、兼容性说明和第三方许可；包内没有驱动或安装器。
 
 ## 🔍 维护版详细改进清单
 
@@ -154,14 +145,14 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 | AMD GPU | ADL 动态加载、活动适配器过滤、逐卡只读温度读取。 |
 | NVIDIA GPU | NVAPI 物理 GPU 数组按 API 最大值分配，逐卡读取并限制传感器范围。 |
 | 混合显卡 | AMD+iGPU/NVIDIA、多 NVIDIA、虚拟适配器和 DLL 缺失时互不拖累。 |
-| LHM 边界 | 随包提供 LHM 0.9.6；只在 PawnIO 设备已存在并可访问时启用，TrayS 不安装驱动。 |
+| LHM 边界 | 随包提供 x64 LHM 0.9.6；缺少 PawnIO 时可经用户同意下载、验证并通过官方安装器安装。 |
 | DLL 安全 | System32/应用目录限定加载，降低 DLL 搜索路径劫持风险。 |
 | 网络 | WinHTTP HTTPS、固定主机、请求白名单、5 秒超时、响应大小上限。 |
 | 配置 | 保持 `TRAYSAVE` 固定布局和版本兼容；更新开关单独原子写入。 |
 | 任务栏 UI | Win11 Shell 能力检测、DPI 和 Explorer 重启边界收紧；取消高成本逐像素移动。 |
 | 线程退出 | 正常等待工作线程，避免用 `TerminateThread` 留下锁或第三方 DLL 状态。 |
 | 应用更新 | 后台检查、精确资产名、SHA-256、版本/架构校验、失败回滚和重启。 |
-| 发布 | x64/x86 包改为 `TrayS_<版本>_<架构>.zip`，包内附校验清单和兼容性说明。 |
+| 发布 | 1.7.9 起只发布 x64，沿用 `TrayS_<版本>_<架构>.zip` 命名，包内附校验清单和兼容性说明。 |
 
 更完整的边界、已知限制和回归表请看 [COMPATIBILITY.md](COMPATIBILITY.md)。后续维护 agent 的上下文、禁止事项和交接入口在 [AGENT_HANDOFF.md](AGENT_HANDOFF.md)。
 
@@ -169,7 +160,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 历史上在 Ryzen 9 9955HX / TOPC YUNIK ITX WIFI D5 上完成过硬件实测：用户安装官方 PawnIO 2.2.0 并运行管理员诊断后，LHM 0.9.6 连续 5 次返回有效的 Tctl/Tdie（52.375–55.125°C）以及两个 CCD 温度。普通权限打开同一设备返回 Win32 5，证明当时需要受保护后台的权限路径。这是该配置的历史记录，不代表其他机器当前已安装 PawnIO。
 
-1.7.8 的问题复现环境为 Intel i5-1235U：托盘 1.7.7 对接旧版 1.7.6 受保护后台，后台持续发布 `temp=28,error=2`。设备探测返回“找不到文件”，系统未发现 PawnIO 服务，因此没有确认到真实 CPU 温度。此环境用于验证错误提示、旧后台识别和构建兼容性；重新获得硬件温度还需要安装可用的官方 PawnIO 并通过实际采样验证。
+1.7.8 的问题复现环境为 Intel i5-1235U / Windows 11 build 22631：最初托盘 1.7.7 对接旧版 1.7.6 受保护后台，后台持续发布 `temp=28,error=2`；设备探测返回“找不到文件”，系统未发现 PawnIO 服务。这个 28°C 来自 ACPI 热区，不能当作真实 CPU 温度。1.7.8 修复状态误报和旧后台识别。
+
+2026-10-19，经用户授权安装官方签名 PawnIO 2.2.0 后，现有 1.7.8 后台自动恢复硬件采样。LHM 的 `CPU Package` 诊断连续 10/10 有效，历史 x64/Win32 C++/CLI 包装层及 x64/x86 native `GetCpuTemp` 路径各 5/5 有效；1.7.9 的正式构建和发布只保留 x64。普通权限启动发布版 EXE 后，用户确认任务栏能看到变化的 CPU 温度；停止本地 UI/看护进程后重新启动也能自动恢复读取。本次未验证完整 Windows 重启、重新登录或睡眠唤醒；发布包不捆绑驱动，缺少 PawnIO 时由用户确认后下载官方安装器。
 
 真实硬件回归仍需要在可恢复的隔离环境中逐项完成，尤其是：
 
@@ -183,7 +176,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 💌 贡献和反馈
 
-欢迎提交 issue 或 pull request。请尽量附上：Windows 版本、CPU/GPU 型号、x64/x86 环境、是否为混合显卡、复现步骤和日志。不要上传个人 `TrayS.dat`、GitHub token 或完整的安全软件敏感报告。
+欢迎提交 issue 或 pull request。请尽量附上：Windows 版本、CPU/GPU 型号、x64 环境、是否为混合显卡、复现步骤和日志。不要上传个人 `TrayS.dat`、GitHub token 或完整的安全软件敏感报告。
 
 ## 📜 许可与致谢
 

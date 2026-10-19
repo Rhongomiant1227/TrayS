@@ -29,7 +29,8 @@ foreach ($project in @('OpenHardwareMonitorApi/OpenHardwareMonitorApi.vcxproj', 
     try {
         [xml]$projectXml = Get-Content -LiteralPath $projectPath -Raw
         $compileGroups = @($projectXml.Project.ItemDefinitionGroup)
-        Assert-Condition ($compileGroups.Count -eq 4) "Expected four build configurations in $project"
+        Assert-Condition ($compileGroups.Count -eq 2) "Expected only Debug/Release x64 configurations in $project"
+        Assert-Condition ($projectXml.OuterXml -notmatch '\|Win32|\|x86') "Unsupported 32-bit build configuration remains in $project"
         foreach ($group in $compileGroups) {
             Assert-Condition ($group.ClCompile.AdditionalOptions -match '(?i)(^|\s)/utf-8(?:\s|$)') "MSVC UTF-8 source mode is missing in $project"
             if ($project -eq 'TrayS/TrayS.vcxproj') {
@@ -70,14 +71,14 @@ Assert-Condition ($targetFramework -eq 'v4.7.2') 'TargetFrameworkVersion must be
 $solutionText = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS.sln') -Raw
 Assert-Condition ($solutionText -notmatch '\|ARM(?:64)?\s*=') 'Unsupported ARM/ARM64 solution configuration found'
 Assert-Condition ($solutionText -notmatch 'Any CPU') 'Unsupported Any CPU solution configuration found'
+Assert-Condition ($solutionText -notmatch '\|(?:x86|Win32)') 'Unsupported 32-bit solution configuration found'
 Assert-Condition ($solutionText -match 'ProjectSection\(ProjectDependencies\)') 'TrayS project dependency is missing'
 
 $lhmRoot = Join-Path $repoRoot 'OpenHardwareMonitorApi/ThirdParty/LibreHardwareMonitor-0.9.6'
 $assemblyPath = Join-Path $lhmRoot 'x64/LibreHardwareMonitorLib.dll'
 Assert-Condition (Test-Path -LiteralPath $assemblyPath) 'x64 LibreHardwareMonitorLib.dll 0.9.6 is missing'
 foreach ($architecture in @(
-    [pscustomobject]@{ Name = 'x64'; Machine = 0x8664 },
-    [pscustomobject]@{ Name = 'x86'; Machine = 0x014c }
+    [pscustomobject]@{ Name = 'x64'; Machine = 0x8664 }
 )) {
     $architecturePath = Join-Path $lhmRoot (Join-Path $architecture.Name 'LibreHardwareMonitorLib.dll')
     Assert-Condition (Test-Path -LiteralPath $architecturePath) "$($architecture.Name) LibreHardwareMonitorLib.dll is missing"
@@ -140,6 +141,8 @@ $updateHeaderPath = Join-Path $repoRoot 'TrayS/Update.h'
 $updateSourcePath = Join-Path $repoRoot 'TrayS/Update.cpp'
 $updateHeader = if (Test-Path -LiteralPath $updateHeaderPath) { Get-Content -LiteralPath $updateHeaderPath -Raw } else { '' }
 $updateSource = if (Test-Path -LiteralPath $updateSourcePath) { Get-Content -LiteralPath $updateSourcePath -Raw -Encoding UTF8 } else { '' }
+$pawnIoSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/PawnIoSetup.cpp') -Raw -Encoding UTF8
+$pawnIoHeader = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/PawnIoSetup.h') -Raw -Encoding UTF8
 $resourceSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.rc') -Raw
 $functionSource = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/Function.cpp') -Raw
 $trayProject = Get-Content -LiteralPath (Join-Path $repoRoot 'TrayS/TrayS.vcxproj') -Raw
@@ -208,7 +211,7 @@ Assert-Condition ($traySource -match 'dwMajorVersion\s*>=\s*10') 'Windows 10+ ve
 Assert-Condition ($traySource -match 'FindDescendantByClass') 'Shell descendant window discovery helper is missing'
 Assert-Condition ($traySource -match 'EnumChildWindows\(root') 'Shell discovery does not enumerate descendant windows'
 Assert-Condition ($resourceSource -match 'TrayS 1\.7') 'Maintained UI version label is missing'
-Assert-Condition ($resourceSource -match 'FILEVERSION 1,7,8,0' -and $resourceSource -match 'PRODUCTVERSION 1,7,8,0') 'Resource version is not 1.7.8'
+Assert-Condition ($resourceSource -match 'FILEVERSION 1,7,9,0' -and $resourceSource -match 'PRODUCTVERSION 1,7,9,0') 'Resource version is not 1.7.9'
 Assert-Condition ($traySource -match 'IsCpuSensorBrokerSampleUsable' -and $traySource -match 'lastError == ERROR_SUCCESS') 'Broker temperature acceptance does not require a successful sensor read'
 Assert-Condition ($traySource -match 'GetCpuSensorBrokerStatusText' -and $traySource -match 'ERROR_FILE_NOT_FOUND') 'Broker status can misreport an old ACPI fallback as a hardware reading'
 Assert-Condition ($traySource -match 'IsCpuSensorBrokerBinaryCurrent' -and $traySource -match 'GetFileVersionInfoW') 'An outdated protected CPU broker is not detected for repair'
@@ -232,13 +235,13 @@ Assert-Condition ($portableBuild -match 'llvm-mingw') 'Portable compatibility bu
 Assert-Condition ($portableBuild -match "'x86_64-w64-windows-gnu'") 'Portable compatibility build target is not x64 MinGW'
 Assert-Condition ($portableBuild -match "'-static'") 'Portable compatibility build does not statically link its C++ runtime'
 Assert-Condition ($portableBuild -match 'TrayS-compat-win11-x64\.exe' -or $portableBuild -match 'TrayS-compat-win11-\{0\}\.exe') 'Portable compatibility output name is missing'
-Assert-Condition ($portablePackage -match 'TrayS_1\.7\.8_compat_' -and $portablePackage -match 'FileMinorPart -ne 7' -and $portablePackage -match 'FileBuildPart -ne 8') 'Portable compatibility package version does not match the application version'
+Assert-Condition ($portablePackage -match 'TrayS_1\.7\.9_compat_' -and $portablePackage -match 'FileMinorPart -ne 7' -and $portablePackage -match 'FileBuildPart -ne 9') 'Portable compatibility package version does not match the application version'
 Assert-Condition ($functionSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'WinHTTP is not loaded from System32'
 Assert-Condition ($functionSource -match 'kPriceHttpTimeoutMs\s*=\s*5000' -and $functionSource -match 'winHttpSetTimeouts\(') 'WinHTTP timeout is not bounded to 5000 ms'
 Assert-Condition ($functionSource -notmatch '(?m)^\s*(?!//).*\bLoadLibrary\s*\(') 'Function.cpp contains an unqualified LoadLibrary call'
 Assert-Condition ($functionSource -match '#if defined\(TRAYS_ENABLE_LEGACY_SERVICE\)') 'Legacy service code is not compile-time gated'
-Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.7\.8"') 'Updater version identity is missing'
-Assert-Condition ($updateHeader -match 'TRAYS_VERSION_PATCH 8') 'Updater patch component does not match the application version'
+Assert-Condition ($updateHeader -match 'TRAYS_VERSION_STRING L"1\.7\.9"') 'Updater version identity is missing'
+Assert-Condition ($updateHeader -match 'TRAYS_VERSION_PATCH 9') 'Updater patch component does not match the application version'
 Assert-Condition ($updateHeader -match 'TRAYS_UPDATE_API_PATH') 'Updater GitHub API path is missing'
 Assert-Condition ($updateSource -match 'LoadLibraryExW\(L"winhttp\.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32\)') 'Updater WinHTTP is not loaded from System32'
 Assert-Condition ($updateSource -match 'WINHTTP_FLAG_SECURE') 'Updater request is not HTTPS-only'
@@ -274,6 +277,15 @@ Assert-Condition ($trayFilters -match 'Update\.cpp' -and $trayFilters -match 'Up
 Assert-Condition ($traySource -notmatch 'ShellExecuteW.*download|start.*https://') 'Updater must not launch a browser or external downloader'
 Assert-Condition ($readmeSource -match 'cgbsmy/TrayS') 'README does not identify the upstream project'
 Assert-Condition ($readmeSource -match 'TrayS_<版本>_<架构>\.zip') 'README does not document the named release package format'
+Assert-Condition ($pawnIoSource -match '/namazso/PawnIO\.Setup/releases/download/2\.2\.0/PawnIO_setup\.exe' -and $pawnIoSource -match '1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032') 'PawnIO download does not pin the official version and digest'
+Assert-Condition ($pawnIoSource -match 'WINHTTP_FLAG_SECURE' -and $pawnIoSource -match 'DISALLOW_HTTPS_TO_HTTP' -and $pawnIoSource -match 'status != 200') 'PawnIO download lacks HTTPS/redirect/HTTP status validation'
+Assert-Condition ($pawnIoSource -match 'WinVerifyTrust' -and $pawnIoSource -match 'VerifyLockedInstaller\(source.value' -and $pawnIoSource -match 'VerifyLockedInstaller\(verified.value') 'PawnIO installer is not revalidated in its elevated protected staging path'
+Assert-Condition ($pawnIoSource -match 'D:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)' -and $pawnIoSource -match 'FILE_FLAG_OPEN_REPARSE_POINT' -and $pawnIoSource -match 'CREATE_NEW') 'PawnIO staging is not protected against user file substitution'
+Assert-Condition ($pawnIoSource -match 'kDownloadDeadlineMs = 120000' -and $pawnIoSource -match 'kPawnIoInstallerBytes = 3410960') 'PawnIO download lacks time/size bounds'
+Assert-Condition ($pawnIoHeader -match '#error TrayS 1\.7\.9 and later support x64 builds only') 'A 32-bit application build is not explicitly rejected'
+Assert-Condition ($traySource -match 'PawnIo220InstallOffered' -and $traySource -match 'TryOfferPawnIoSetup' -and $traySource -match 'LaunchPawnIoSetup') 'Missing PawnIO has no one-time in-app installation offer'
+Assert-Condition ($traySource -match 'PawnIoSetupThreadProc' -and $traySource -match 'WM_APP_TRAYS_PAWNIO_SETUP' -and $traySource -match 'ReapPawnIoSetupWorker') 'PawnIO background setup completion/cleanup is not connected to the tray UI'
+Assert-Condition ($trayProject -match 'ClCompile Include="PawnIoSetup\.cpp"' -and $trayFilters -match 'PawnIoSetup\.cpp') 'PawnIO setup source is not included in the release project'
 
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Error $_ }

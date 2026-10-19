@@ -327,6 +327,11 @@ static void TestCpuTemperatureSources()
     g_pawnIoProbeError = ERROR_FILE_NOT_FOUND;
     UpdateCpuTemperatureStatus(hSetting);
     GetDlgItemTextW(hSetting, IDC_LABEL_CPU_TEMPERATURE_STATUS, status, 128);
+	wchar_t setupButton[64]{};
+	GetDlgItemTextW(hSetting, IDC_BUTTON_CPU_TEMPERATURE_ENABLE, setupButton, ARRAYSIZE(setupButton));
+	Check(wcscmp(setupButton, L"下载安装") == 0 &&
+		IsWindowEnabled(GetDlgItem(hSetting, IDC_BUTTON_CPU_TEMPERATURE_ENABLE)),
+		"An installed broker hides/disables the missing PawnIO download action");
     if (!brokerInstalledForFixture && !brokerSampleForFixture)
         Check(wcsstr(status, L"安装 PawnIO") != NULL, "Missing PawnIO has no installation guidance");
     TraySave.bMonitorTemperature = FALSE;
@@ -410,6 +415,36 @@ static void TestCpuSensorAuthorizationRequestConditions()
 		"Missing PawnIO incorrectly triggered an administrator prompt");
 }
 
+static void TestPawnIoSetupOfferAndLifetime()
+{
+	Check(ShouldOfferPawnIoSetup(TRUE, ERROR_FILE_NOT_FOUND, FALSE, FALSE),
+		"Missing PawnIO did not offer the in-app installation");
+	Check(ShouldOfferPawnIoSetup(TRUE, ERROR_PATH_NOT_FOUND, FALSE, FALSE),
+		"A missing device path did not offer installation");
+	Check(!ShouldOfferPawnIoSetup(FALSE, ERROR_FILE_NOT_FOUND, FALSE, FALSE),
+		"A driver was offered while temperature monitoring was disabled");
+	Check(!ShouldOfferPawnIoSetup(TRUE, ERROR_ACCESS_DENIED, FALSE, FALSE),
+		"An installed driver with restricted access was treated as missing");
+	Check(!ShouldOfferPawnIoSetup(TRUE, ERROR_FILE_NOT_FOUND, TRUE, FALSE),
+		"An in-progress installation allowed a duplicate prompt");
+	Check(!ShouldOfferPawnIoSetup(TRUE, ERROR_FILE_NOT_FOUND, FALSE, TRUE),
+		"A declined/failed offer was repeated automatically");
+	Check(IsPawnIoSetupArchitectureSupported(PROCESSOR_ARCHITECTURE_AMD64) &&
+		!IsPawnIoSetupArchitectureSupported(PROCESSOR_ARCHITECTURE_INTEL) &&
+		!IsPawnIoSetupArchitectureSupported(PROCESSOR_ARCHITECTURE_ARM64),
+		"The x64 installer can be selected on an unsupported native architecture");
+	g_pawnIoSetupThread = CreateEventW(NULL, TRUE, FALSE, NULL);
+	g_pawnIoSetupCancelEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+	Check(g_pawnIoSetupThread && g_pawnIoSetupCancelEvent, "Cannot create setup lifetime fixtures");
+	ReapPawnIoSetupWorker();
+	Check(g_pawnIoSetupThread && g_pawnIoSetupCancelEvent,
+		"An unfinished setup lost its cancellation or worker handle");
+	SetEvent(g_pawnIoSetupThread);
+	ReapPawnIoSetupWorker();
+	Check(!g_pawnIoSetupThread && !g_pawnIoSetupCancelEvent,
+		"Finished PawnIO setup leaked its worker or cancellation handle");
+}
+
 static void TestCpuSensorAuthorizationIsSerialized()
 {
 	HANDLE inFlightSetup = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -457,6 +492,7 @@ int main()
 		{ "CPU sensor broker validates sample errors and version status", TestCpuSensorBrokerSampleAndStatus },
         { "Temperature samples publish after providers finish", TestTemperatureSamplePublication },
         { "CPU sensor authorization prompt is automatic and one-time", TestCpuSensorAuthorizationRequestConditions },
+		{ "PawnIO download offer, architecture and worker lifetime", TestPawnIoSetupOfferAndLifetime },
         { "CPU sensor authorization cannot spawn duplicate prompts", TestCpuSensorAuthorizationIsSerialized }
     };
     for (const auto& test : tests)

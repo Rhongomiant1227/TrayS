@@ -2,7 +2,7 @@
 param(
     [string]$OutputDirectory,
     [switch]$Force,
-    [ValidateSet('x64', 'x86')]
+    [ValidateSet('x64')]
     [string]$Architecture = 'x64'
 )
 
@@ -25,7 +25,7 @@ function Resolve-WithinRepository([string]$path, [string]$label) {
 }
 
 $OutputDirectory = Resolve-WithinRepository $OutputDirectory 'OutputDirectory'
-$architectureLabel = if ($Architecture -eq 'x64') { 'x64' } else { 'x86' }
+$architectureLabel = 'x64'
 $buildDirectory = Resolve-WithinRepository (Join-Path $repoRoot ('.build-native\portable-compat-{0}' -f $architectureLabel)) 'build directory'
 $archivePath = Resolve-WithinRepository (Join-Path (Split-Path -Parent $OutputDirectory) ((Split-Path -Leaf $OutputDirectory) + '.zip')) 'archive path'
 $sourceDirectory = Join-Path $repoRoot 'TrayS'
@@ -75,19 +75,19 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $buildDirectory -Force | Out-Null
 
 $compileFlags = @(
-    '-target', $(if ($Architecture -eq 'x64') { 'x86_64-w64-windows-gnu' } else { 'i686-w64-windows-gnu' }),
+    '-target', $('x86_64-w64-windows-gnu'),
     '-std=c++17',
     '-D_DEBUG',
     '-D_UNICODE',
     '-DUNICODE',
-    $(if ($Architecture -eq 'x64') { '-D_WIN64' } else { '-D_WIN32' }),
+    $('-D_WIN64'),
     '-DTRAYS_PORTABLE_COMPAT',
     '-O2',
     '-g0',
     '-I', $sourceDirectory
 )
 
-foreach ($sourceName in @('TrayS.cpp', 'Function.cpp', 'Update.cpp')) {
+foreach ($sourceName in @('TrayS.cpp', 'Function.cpp', 'Update.cpp', 'PawnIoSetup.cpp')) {
     $sourcePath = Join-Path $sourceDirectory $sourceName
     $objectPath = Join-Path $buildDirectory (($sourceName -replace '\.cpp$', '') + '.o')
     if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
@@ -112,7 +112,7 @@ $resourceObjectPath = Join-Path $buildDirectory 'TrayS_res.o'
 Push-Location $sourceDirectory
 try {
     Write-Host 'Compiling TrayS.rc'
-    & $windres '--codepage=65001' ('--target={0}' -f $(if ($Architecture -eq 'x64') { 'x86_64-w64-mingw32' } else { 'i686-w64-mingw32' })) '-I' $sourceDirectory $temporaryResourcePath '-o' $resourceObjectPath
+    & $windres '--codepage=65001' ('--target={0}' -f $('x86_64-w64-mingw32')) '-I' $sourceDirectory $temporaryResourcePath '-o' $resourceObjectPath
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $resourceObjectPath -PathType Leaf)) {
         throw "LLVM-MinGW failed to compile TrayS.rc (exit code $LASTEXITCODE)."
     }
@@ -130,17 +130,18 @@ Write-Host ("Linking a self-contained {0} GUI executable" -f $architectureLabel)
 # _DEBUG selects the regular wWinMain path in the legacy source. The binary is
 # still optimized, and -static removes the compiler's libc++/libunwind DLL
 # dependency so the copied EXE runs directly from the output directory.
-& $clang '-target' $(if ($Architecture -eq 'x64') { 'x86_64-w64-windows-gnu' } else { 'i686-w64-windows-gnu' }) '-municode' '-mwindows' '-static' '-D_DEBUG' '-DTRAYS_PORTABLE_COMPAT' '-O2' '-o' $exePath `
+& $clang '-target' $('x86_64-w64-windows-gnu') '-municode' '-mwindows' '-static' '-D_DEBUG' '-DTRAYS_PORTABLE_COMPAT' '-O2' '-o' $exePath `
     (Join-Path $buildDirectory 'TrayS.o') `
     (Join-Path $buildDirectory 'Function.o') `
     (Join-Path $buildDirectory 'Update.o') `
+    (Join-Path $buildDirectory 'PawnIoSetup.o') `
     $resourceObjectPath @linkLibraries
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
     throw "LLVM-MinGW failed to link TrayS (exit code $LASTEXITCODE)."
 }
 
 $headerText = (& $readobj '--file-headers' $exePath | Out-String)
-if ($headerText -notmatch $(if ($Architecture -eq 'x64') { 'IMAGE_FILE_MACHINE_AMD64' } else { 'IMAGE_FILE_MACHINE_I386' }) -or $headerText -notmatch 'IMAGE_SUBSYSTEM_WINDOWS_GUI') {
+if ($headerText -notmatch $('IMAGE_FILE_MACHINE_AMD64') -or $headerText -notmatch 'IMAGE_SUBSYSTEM_WINDOWS_GUI') {
     throw ('The generated file is not a Windows {0} GUI executable.' -f $architectureLabel)
 }
 $imports = (& $readobj '--coff-imports' $exePath | Out-String)

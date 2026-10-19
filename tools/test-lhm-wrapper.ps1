@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('x64', 'Win32')]
-    [string]$Platform = $(if ([IntPtr]::Size -eq 8) { 'x64' } else { 'Win32' }),
+    [ValidateSet('x64')]
+    [string]$Platform = 'x64',
 
     [switch]$RequireCpuTemperature,
 
@@ -11,11 +11,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$expectedPointerSize = if ($Platform -eq 'x64') { 8 } else { 4 }
+$expectedPointerSize = 8
 if ([IntPtr]::Size -ne $expectedPointerSize) {
     throw "Run this test with a $Platform Windows PowerShell process."
 }
-$buildPlatform = if ($Platform -eq 'x64') { 'x64' } else { 'Win32' }
+$buildPlatform = 'x64'
 $buildOutput = Join-Path $repoRoot ("Bin\{0}\Release" -f $buildPlatform)
 $wrapperPath = Join-Path $buildOutput 'OpenHardwareMonitorApi.dll'
 if (-not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {

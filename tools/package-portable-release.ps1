@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('x64', 'x86')]
+    [ValidateSet('x64')]
     [string]$Architecture = 'x64',
     [switch]$Force
 )
@@ -10,7 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $label = $Architecture
 $sourceRoot = Join-Path $repoRoot ("dist\TrayS-compat-win11-{0}" -f $label)
 $sourceExe = Join-Path $sourceRoot ("TrayS-compat-win11-{0}.exe" -f $label)
-$packageName = "TrayS_1.7.8_compat_{0}" -f $label
+$packageName = "TrayS_1.7.9_compat_{0}" -f $label
 $packageRoot = Join-Path $repoRoot ("dist\{0}" -f $packageName)
 $archivePath = "$packageRoot.zip"
 
@@ -40,14 +40,14 @@ if ($peOffset -lt 64 -or $peOffset -gt $bytes.Length - 6 -or
     [BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) {
     throw "Invalid PE header: $sourceExe"
 }
-$expectedMachine = if ($Architecture -eq 'x64') { 0x8664 } else { 0x014c }
+$expectedMachine = 0x8664
 if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne $expectedMachine) {
     throw "Executable architecture does not match $Architecture"
 }
 $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($sourceExe)
 if ($version.FileMajorPart -ne 1 -or $version.FileMinorPart -ne 7 -or
-	$version.FileBuildPart -ne 8 -or $version.FilePrivatePart -ne 0) {
-	throw "Executable version does not match the 1.7.8 compatibility package: $($version.FileVersion)"
+	$version.FileBuildPart -ne 9 -or $version.FilePrivatePart -ne 0) {
+	throw "Executable version does not match the 1.7.9 compatibility package: $($version.FileVersion)"
 }
 
 if ((Test-Path -LiteralPath $packageRoot) -or (Test-Path -LiteralPath $archivePath)) {
@@ -62,7 +62,7 @@ foreach ($name in @('README.md', 'COMPATIBILITY.md', 'MEMORY_AUDIT.md')) {
 }
 @(
     'TrayS maintained compatibility package',
-    'Version: 1.7.8',
+    'Version: 1.7.9',
     ("Architecture: {0}" -f $label),
     'Build: native Win32/LLVM-MinGW static runtime',
     'This native compatibility build omits the C++/CLI LibreHardwareMonitor wrapper and kernel driver files.',

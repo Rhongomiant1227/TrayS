@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('x64', 'Win32')]
-    [string]$Platform = $(if ([IntPtr]::Size -eq 8) { 'x64' } else { 'Win32' }),
+    [ValidateSet('x64')]
+    [string]$Platform = 'x64',
 
     [ValidateRange(1, 60)]
     [int]$SampleCount = 5,
@@ -13,7 +13,7 @@ param(
 # driver or changes service state. Run it in Windows PowerShell (.NET Framework).
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$expectedPointerSize = if ($Platform -eq 'x64') { 8 } else { 4 }
+$expectedPointerSize = 8
 if ([IntPtr]::Size -ne $expectedPointerSize) {
     throw "Run this diagnostic with a $Platform Windows PowerShell process."
 }

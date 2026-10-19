@@ -1,23 +1,23 @@
 # TrayS 维护交接说明
 
-这份文件面向后续维护 agent。当前仓库是 `Rhongomiant1227/TrayS` fork 的 Windows 10/11 维护版，当前产品版本为 **1.7.8**。目标是保留 TrayS 的任务栏监控功能，同时让发布包在 AMD、Intel、多显卡和较新的 Windows Shell 上安全降级。
+这份文件面向后续维护 agent。当前仓库是 `Rhongomiant1227/TrayS` fork 的 Windows 10/11 维护版，当前产品版本为 **1.7.9**。从 1.7.9 起只支持和发布 x64。目标是保留 TrayS 的任务栏监控功能，同时让发布包在 AMD、Intel、多显卡和较新的 Windows Shell 上安全降级。
 
 ## 当前基线
 
-- 目标平台：Windows 10（build 10240 及以上）和 Windows 11；构建配置只有 `Release|x64`、`Release|Win32` 及对应 Debug 配置。
+- 目标平台：Windows 10/11 x64；从 1.7.9 起不再构建或发布 Win32/x86。
 - 默认 UAC：`asInvoker`。普通启动/登录启动的托盘 UI 不提权。启用 CPU 温度且 PawnIO 拒绝访问时，程序自动请求一次 UAC 安装受保护的 CPU 读取后台程序，并创建任务计划；尝试状态在 HKCU 持久化，避免每次启动重复请求。任务只允许 SYSTEM/管理员修改，普通用户只能读取/运行。不要让提升任务运行用户可写路径中的程序。
 - 启动顺序：先用 `RtlGetVersion` 检查 Windows 10+，旧系统只显示提示并退出；随后才创建进程映射、查找 Explorer、读取配置和初始化监控接口。
 - 设置 UI：链接指向本 fork 和 `COMPATIBILITY.md`，不再保留旧论坛链接；风格选项对应 `ACCENT_DISABLED`、透明渐变、DWM 模糊和亚克力。
 - 更新机制：设置中提供“自动获取更新”（默认开启）和“检查更新”按钮。更新只访问 GitHub HTTPS API/Release，按 `TrayS_<版本>_<架构>.zip` 精确选择资产，并要求 SHA-256、版本和 PE 架构全部匹配；下载、校验和替换在独立线程/临时 PowerShell helper 中完成，不打开浏览器、不加载驱动。更新失败保留旧 EXE。
-- ARM 边界：当前只维护 Win32/x64。Windows on ARM64 可尝试 x64 模拟运行，但不等同于原生 ARM64；不要添加把 ARM64 错误映射到 x64 的 solution 配置，也不要把现有包重命名成 ARM64。原生 ARM64 需要重新处理 C++/CLI、传感器程序集和 AMD/NVIDIA 厂商 DLL，并经过真实设备回归。
-- 版本信息：资源文件 `TrayS/TrayS.rc` 中为 `1.7.8.0`。`TRAYSAVE` 原始结构保持兼容，当前数据版本仍为 `116`，不要仅因改 UI 就递增它。资源文件保持 UTF-16 LE 编码，C++ 源文件保持 UTF-8。
+- ARM 边界：当前只维护 x64。Windows on ARM64 可尝试 x64 模拟运行，但不等同于原生 ARM64；不要添加把 ARM64 错误映射到 x64 的 solution 配置，也不要把现有包重命名成 ARM64。原生 ARM64 需要重新处理 C++/CLI、传感器程序集和 AMD/NVIDIA 厂商 DLL，并经过真实设备回归。
+- 版本信息：资源文件 `TrayS/TrayS.rc` 中为 `1.7.9.0`。`TRAYSAVE` 原始结构保持兼容，当前数据版本仍为 `116`。
 
 ## 温度与显卡安全边界
 
 1. CPU 优先读 LHM 的硬件封装温度（AMD Tctl/Tdie 优先），不可用时回退 Windows/ACPI Thermal Zone 的 PDH 只读计数器（高精度计数器优先）。热区未必对应 CPU，某些固件不公开热区时返回不可用，不应把不可用当成 0°C。
-2. 只有 PawnIO 设备已经安装且可访问时，受保护的传感器后台程序才加载随包提供的 LibreHardwareMonitor 0.9.6。官方 PawnIO 2.2.0 的设备 ACL 只允许 SYSTEM 与提升权限的管理员，普通权限返回 Win32 5。后台程序只通过受 SID 限制的共享内存向普通托盘 UI 暴露温度。LHM CPU 硬件组必须在 `Computer::Open()` 前启用。TrayS 不安装、不启动、不捆绑 PawnIO 驱动，也不修改它的 ACL；禁止回退 WinRing0、Ols 或自行读 MSR/PCI。
+2. 只有 PawnIO 设备已经安装且可访问时，受保护的传感器后台程序才加载随包提供的 LibreHardwareMonitor 0.9.6。官方 PawnIO 2.2.0 的设备 ACL 只允许 SYSTEM 与提升权限的管理员，普通权限返回 Win32 5。后台程序只通过受 SID 限制的共享内存向普通托盘 UI 暴露温度。LHM CPU 硬件组必须在 `Computer::Open()` 前启用。发布包不捆绑 PawnIO；1.7.9 起在用户明确同意后可从官方固定地址下载并校验安装器，再通过 UAC 安装。TrayS 不修改驱动 ACL；禁止回退 WinRing0、Ols 或自行读 MSR/PCI。
 3. AMD GPU 只使用 `atiadlxx.dll`/`atiadlxy.dll` 的 ADL 只读温度接口；NVIDIA GPU 只使用 `nvapi64.dll`/`nvapi.dll` 的 NVAPI 温度接口。两条路径都逐卡枚举，单卡失败不能阻塞其他卡，也不能调用风扇、频率、电压、功耗或超频接口。
-4. 严禁恢复 `WinRing0x32.sys`、`WinRing0x64.sys`、Ols/MSR/PCI 直读、PawnIO 自动安装，或任何会重载显示驱动、改变 BIOS/服务状态的测试。
+4. 严禁恢复 `WinRing0x32.sys`、`WinRing0x64.sys`、Ols/MSR/PCI 直读、PawnIO 静默安装或 ACL 修改，或任何会重载显示驱动、改变 BIOS/服务状态的测试。允许的 PawnIO 流程仅限设置页用户确认后下载并运行官方签名安装器。
 5. 释放温度 DLL 前必须取得 `g_temperatureLock` 独占锁；ACPI 查询的生命周期由 `g_thermalPdhLock` 管理。若移动线程或新增硬件后端，先审查锁顺序和退出等待。
 
 ## Windows 10/11 UI 边界
@@ -32,10 +32,10 @@ Build Tools 保存在仓库目录 `.buildtools\vs`，LLVM-MinGW 和 .NET Framewo
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate-compatibility.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -Platform x64 -Configuration Release -PackageName TrayS_1.7.8_x64 -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -Platform x64 -Configuration Release -PackageName TrayS_1.7.9_x64 -Force
 ```
 
-当前机器没有 MSBuild 时，使用项目内 LLVM-MinGW 生成原生 Win32 兼容性验证 EXE：
+当前机器没有 MSBuild 时，使用项目内 LLVM-MinGW 生成原生 x64 兼容性验证 EXE：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-portable-compat-exe.ps1 -Force
@@ -47,11 +47,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-portable-compa
 
 兼容性 Release 同时附带 `MEMORY_AUDIT.md`，记录动态模块、句柄、GDI/USER 对象和运行压力检查的边界。
 
-Release 资产名称必须包含产品名和架构，例如 `TrayS_1.7.8_x64.zip`、`TrayS_1.7.8_x86.zip`；不要恢复旧的 `_x64_ALL_...` 匿名命名。
+Release 资产名称必须包含产品名和架构，例如 `TrayS_1.7.9_x64.zip`；不要恢复旧的 `_x64_ALL_...` 匿名命名，也不要重新发布 x86 包。
 
 本机现有仓库内 MSBuild 和 LLVM-MinGW，并具备完整的 MSVC/C++/CLI 构建工具。此前 x64/Win32 Release 已以 0 个警告、0 个错误构建。旧硬件上的 ACPI/UI 测试记录不能作为更换 CPU 后的温度实测依据。
 
-曾在 AMD Ryzen 9 9955HX / TOPC YUNIK ITX WIFI D5 上安装官方签名 PawnIO 2.2.0 并完成 5/5 Tctl/Tdie 与 CCD 实读，证明当时的 LHM 硬件路径可用。但本次复现“已授权而温度空白”的本机为 Intel i5-1235U，状态不同：托盘日志反复显示共享样本 `temp=28,error=2`，受保护任务仍运行 1.7.6.0，而托盘是 1.7.7.0；受保护进程日志记录 PawnIO 设备错误 2，`sc.exe query PawnIO` 返回服务不存在，当前环境未检测到可用 PawnIO 设备。旧 broker 的 28°C 是错误状态下发布的 ACPI 热区值，不能当作硬件温度。1.7.8 修复状态误报并检测/修复旧 broker；真实 CPU 温度仍须在 PawnIO 设备可用时重新验证。DLL 能加载但读数为 0 不属于硬件测试通过；使用 `test-lhm-wrapper.ps1 -RequireCpuTemperature -SampleCount 5` 和 native 集成测试进一步验证程序路径。
+曾在 AMD Ryzen 9 9955HX / TOPC YUNIK ITX WIFI D5 上安装官方签名 PawnIO 2.2.0 并完成 5/5 Tctl/Tdie 与 CCD 实读，证明当时的 LHM 硬件路径可用。本次 Intel i5-1235U / Windows 11 build 22631 初次复现“已授权而温度空白”时，托盘日志反复显示共享样本 `temp=28,error=2`，受保护任务仍运行 1.7.6.0，而托盘是 1.7.7.0；受保护进程日志记录 PawnIO 设备错误 2，`sc.exe query PawnIO` 返回服务不存在。旧 broker 的 28°C 是错误状态下发布的 ACPI 热区值，不能当作硬件温度。1.7.8 修复状态误报并检测/修复旧 broker。
+
+2026-10-19，经用户授权在上述 Intel 本机安装官方签名 PawnIO 2.2.0 后，现有 1.7.8 后台自动重试并读到真实 CPU 温度。安装器 SHA-256 为 `1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032`，Authenticode 签名有效；保留官方驱动默认配置，没有修改设备 ACL。LHM 的 `CPU Package`（`/intelcpu/0/temperature/12`）诊断有效样本 10/10，x64/Win32 C++/CLI 包装层和 x64/x86 native `GetCpuTemp` 路径分别通过 5/5 实读。普通权限运行发布版 `dist\TrayS_1.7.9_x64\TrayS.exe`，日志持续发布变化的有效温度，用户确认任务栏数值可见且会变化。停止本地测试 UI/看护进程后重新启动，后台保持运行，程序自动恢复读取并发布不同温度，无需鼠标悬停。完整 Windows 重启、重新登录和睡眠唤醒未在本次检查中验证。
+
+本机详细记录保存在被 Git 忽略的 `.build-native\local-cpu-validation.txt`、`.build-native\local-cpu-restart-validation.txt` 和 `.build-native\local-cpu-restart-runtime.txt`。驱动属于单独授权的系统安装，不是可随工作目录删除的编译工具；应用发布包及默认安装行为保持不变。DLL 能加载但读数为 0 不属于硬件测试通过；后续仍需使用 `test-lhm-wrapper.ps1 -RequireCpuTemperature -SampleCount 5` 和 native 集成测试验证程序路径。
 
 构建后至少运行：
 
@@ -60,7 +64,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate-compatibili
 git diff --check
 ```
 
-如果 VS/MSBuild 不可用，保持 C++/CLI Release 的限制说明，并使用 `build-portable-compat-exe.ps1` 验证原生 Win32 路径；不要为了测试而加载驱动。
+如果 VS/MSBuild 不可用，保持 C++/CLI Release 的限制说明，并使用 `build-portable-compat-exe.ps1` 验证原生 x64 路径；不要为了测试而加载驱动。
 
 ## 未来机型适配清单
 

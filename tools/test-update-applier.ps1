@@ -6,15 +6,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($CandidatePath)) {
-    $candidatePlatform = if ([IntPtr]::Size -eq 8) { 'x64' } else { 'Win32' }
+    $candidatePlatform = 'x64'
     $CandidatePath = Join-Path $repoRoot ("Bin\{0}\Release\TrayS.exe" -f $candidatePlatform)
 }
 if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
     throw "Build TrayS first or pass -CandidatePath: $CandidatePath"
 }
 $candidateVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($CandidatePath).FileVersion
-if (-not $candidateVersion.StartsWith('1.7.8.')) {
-	throw "The test candidate must have version 1.7.8; found $candidateVersion"
+if (-not $candidateVersion.StartsWith('1.7.9.')) {
+	throw "The test candidate must have version 1.7.9; found $candidateVersion"
 }
 $candidateBytes = [IO.File]::ReadAllBytes($CandidatePath)
 if ($candidateBytes.Length -lt 64 -or [BitConverter]::ToUInt16($candidateBytes, 0) -ne 0x5a4d) {
@@ -26,7 +26,7 @@ if ($candidatePeOffset -lt 64 -or $candidatePeOffset -gt $candidateBytes.Length 
     throw 'The test candidate has an invalid PE header.'
 }
 $candidateMachine = [BitConverter]::ToUInt16($candidateBytes, $candidatePeOffset + 4)
-$expectedMachine = if ([IntPtr]::Size -eq 8) { 0x8664 } else { 0x014c }
+$expectedMachine = 0x8664
 if ($candidateMachine -ne $expectedMachine) {
     throw ('Candidate architecture does not match this PowerShell process (0x{0:x4}).' -f $expectedMachine)
 }
@@ -98,7 +98,7 @@ function Invoke-UpdaterScenario([string]$Scenario, [string]$ZipPath, [string]$Ta
                 ('$zip=' + (ConvertTo-PowerShellLiteral $ZipPath)),
                 ('$target=' + (ConvertTo-PowerShellLiteral $TargetPath)),
                 ('$expectedHash=' + (ConvertTo-PowerShellLiteral $Hash)),
-                ('$expectedVersion=' + (ConvertTo-PowerShellLiteral '1.7.8') + "; `$expectedVersion=`$expectedVersion.TrimStart('v')"),
+                ('$expectedVersion=' + (ConvertTo-PowerShellLiteral '1.7.9') + "; `$expectedVersion=`$expectedVersion.TrimStart('v')"),
                 ('$parentPid=' + [string]$ParentProcessId)
             )
             $scriptLines[$index] = ($dynamicAssignments -join "`r`n") + "`r`n" + $scriptLines[$index]

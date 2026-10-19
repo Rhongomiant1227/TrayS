@@ -8,6 +8,7 @@
 
 #include "framework.h"
 #include "TrayS.h"
+#include "PawnIoSetup.h"
 #include <intrin.h>
 #include <limits.h>
 #include <psapi.h>
@@ -31,6 +32,8 @@ static void MaybeRestartCpuSensorBroker();
 static BOOL LaunchCpuSensorBrokerSetup(HWND owner);
 static BOOL QueryCpuSensorTaskBatteryPolicy(const std::wstring& taskName, BOOL* needsRepair);
 static BOOL ConfigureCpuSensorTaskPowerSettings(const std::wstring& taskName);
+static BOOL LaunchPawnIoSetup(HWND owner);
+static void ReapPawnIoSetupWorker();
 
 struct CpuSensorBrokerSharedState
 {
@@ -68,6 +71,16 @@ static BOOL g_cpuSensorBrokerTaskInstalled = FALSE;
 static LONG g_cpuSensorBrokerTraceTick = 0;
 static LONG g_cpuSensorBrokerRestartTick = 0;
 static volatile LONG g_localCpuHardwareSampleTick = 0;
+static volatile LONG g_pawnIoSetupPhase = PAWNIO_SETUP_IDLE;
+static volatile LONG g_pawnIoSetupError = ERROR_SUCCESS;
+static HANDLE g_pawnIoSetupThread = NULL;
+static HANDLE g_pawnIoSetupCancelEvent = NULL;
+
+static BOOL IsPawnIoSetupInProgress()
+{
+	LONG phase = InterlockedCompareExchange(&g_pawnIoSetupPhase, 0, 0);
+	return phase >= PAWNIO_SETUP_DOWNLOADING && phase <= PAWNIO_SETUP_INSTALLING;
+}
 
 static BOOL HasFreshLocalCpuHardwareSample()
 {
@@ -1918,7 +1931,12 @@ static LPCWSTR GetCpuSensorBrokerStatusText(BOOL taskInstalled, BOOL sampleFresh
 
 static void UpdateCpuTemperatureStatus(HWND dialog)
 {
+	ReapPawnIoSetupWorker();
 	LPCWSTR status = L"CPU：未开启";
+	const LONG setupPhase = InterlockedCompareExchange(&g_pawnIoSetupPhase, 0, 0);
+	const DWORD setupError = static_cast<DWORD>(InterlockedCompareExchange(&g_pawnIoSetupError, 0, 0));
+	const BOOL pawnIoSetupBusy = IsPawnIoSetupInProgress();
+	const BOOL pawnIoMissing = IsPawnIoMissingError(g_pawnIoProbeError);
 	DWORD brokerTemperature = 0;
 	DWORD brokerError = ERROR_SUCCESS;
 	BOOL brokerTaskInstalled = IsCpuSensorBrokerTaskInstalled();
@@ -1936,7 +1954,17 @@ static void UpdateCpuTemperatureStatus(HWND dialog)
 	{
 		LPCWSTR brokerStatus = GetCpuSensorBrokerStatusText(brokerTaskInstalled,
 			brokerHasFreshSample, brokerTemperature, brokerError, g_cpuSensorBrokerTaskNeedsRepair);
-		if (brokerStatus)
+		if (pawnIoSetupBusy)
+			status = setupPhase == PAWNIO_SETUP_DOWNLOADING ? L"CPU：正在下载驱动" :
+				(setupPhase == PAWNIO_SETUP_VERIFYING ? L"CPU：正在校验驱动" :
+				(setupPhase == PAWNIO_SETUP_AUTHORIZING ? L"CPU：等待管理员授权" : L"CPU：正在安装驱动"));
+		else if (setupPhase == PAWNIO_SETUP_FINISHED && setupError == ERROR_SUCCESS_REBOOT_REQUIRED)
+			status = L"CPU：驱动需要重启";
+		else if (pawnIoMissing)
+			status = !IsPawnIoSetupSupported() ? L"CPU：驱动安装仅限 x64" :
+				(setupPhase == PAWNIO_SETUP_FINISHED && setupError != ERROR_SUCCESS ?
+				(setupError == ERROR_CANCELLED ? L"CPU：安装已取消" : L"CPU：驱动安装未完成") : L"CPU：需安装 PawnIO");
+		else if (brokerStatus)
 			status = brokerStatus;
 		else if (g_cpuSensorBrokerSetupInProgress)
 			status = L"CPU：正在授权";
@@ -1955,15 +1983,19 @@ static void UpdateCpuTemperatureStatus(HWND dialog)
 	SetDlgItemTextW(dialog, IDC_LABEL_CPU_TEMPERATURE_STATUS, status);
 	const BOOL brokerNeedsRepair = brokerTaskInstalled && g_cpuSensorBrokerTaskNeedsRepair;
 	SetDlgItemTextW(dialog, IDC_BUTTON_CPU_TEMPERATURE_ENABLE,
-		g_cpuSensorBrokerSetupInProgress ? L"处理中..." :
+		pawnIoSetupBusy ? L"处理中..." :
+		(pawnIoMissing ? L"下载安装" :
+		(g_cpuSensorBrokerSetupInProgress ? L"处理中..." :
 		(brokerNeedsRepair ? L"修复一次" :
-		(brokerTaskInstalled ? L"后台已装" : L"授权一次")));
+		(brokerTaskInstalled ? L"后台已装" : L"授权一次")))));
 	EnableWindow(GetDlgItem(dialog, IDC_BUTTON_CPU_TEMPERATURE_ENABLE),
-		(!brokerTaskInstalled || brokerNeedsRepair) && !g_cpuSensorBrokerSetupInProgress);
+		(pawnIoMissing || !brokerTaskInstalled || brokerNeedsRepair) &&
+		!g_cpuSensorBrokerSetupInProgress && !pawnIoSetupBusy &&
+		(!pawnIoMissing || IsPawnIoSetupSupported()));
 	// Keep the open settings page in sync with samples that arrive after DLL
 	// initialization or after the one-time elevated installer has exited.
-	if (g_cpuSensorBrokerSetupInProgress || TraySave.bMonitorTemperature)
-		SetTimer(dialog, 4, g_cpuSensorBrokerSetupInProgress ? 1000 : 3000, NULL);
+	if (pawnIoSetupBusy || g_cpuSensorBrokerSetupInProgress || TraySave.bMonitorTemperature)
+		SetTimer(dialog, 4, (pawnIoSetupBusy || g_cpuSensorBrokerSetupInProgress) ? 1000 : 3000, NULL);
 	static LPCWSTR lastStatus = NULL;
 	static BOOL lastRepairState = FALSE;
 	if (!lastStatus || wcscmp(lastStatus, status) != 0 || lastRepairState != brokerNeedsRepair)
@@ -2923,12 +2955,173 @@ static BOOL InstallCpuSensorBroker(const std::wstring& expectedSid)
 	return TRUE;
 }
 
+static DWORD InstallPawnIoAndCpuSensorBroker(const std::wstring& expectedSid, LPCWSTR installerPath)
+{
+	std::wstring currentSid;
+	if (!IsProcessElevated() || !GetCurrentUserSidString(&currentSid) || currentSid != expectedSid)
+		return ERROR_ACCESS_DENIED;
+	DWORD driverResult = ERROR_SUCCESS;
+	if (!IsPawnIoDeviceAvailable())
+	{
+		if (!IsPawnIoMissingError(g_pawnIoProbeError)) return g_pawnIoProbeError;
+		driverResult = InstallVerifiedPawnIoDriver(installerPath);
+		TraySRuntimeLogFormat(L"PawnIO setup: official installer exit=%lu", driverResult);
+		if (driverResult != ERROR_SUCCESS && driverResult != ERROR_SUCCESS_REBOOT_REQUIRED)
+			return driverResult;
+	}
+	// The same consent installs/updates the protected reader as well. A driver
+	// alone is not sufficient for the normal unelevated tray token.
+	if (!InstallCpuSensorBroker(currentSid)) return ERROR_INSTALL_FAILURE;
+	return driverResult;
+}
+
+struct PawnIoSetupContext
+{
+	HWND notifyWindow;
+	std::wstring sid;
+	std::wstring executablePath;
+	HANDLE cancelEvent;
+};
+
+static void ReapPawnIoSetupWorker()
+{
+	if (g_pawnIoSetupThread && WaitForSingleObject(g_pawnIoSetupThread, 0) == WAIT_OBJECT_0)
+	{
+		CloseHandle(g_pawnIoSetupThread);
+		g_pawnIoSetupThread = NULL;
+		if (g_pawnIoSetupCancelEvent) CloseHandle(g_pawnIoSetupCancelEvent);
+		g_pawnIoSetupCancelEvent = NULL;
+	}
+}
+
+static DWORD WINAPI PawnIoSetupThreadProc(LPVOID parameter)
+{
+	PawnIoSetupContext* context = static_cast<PawnIoSetupContext*>(parameter);
+	HRESULT comResult = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	std::wstring directory, installerPath;
+	DWORD error = DownloadVerifiedPawnIoInstaller(&directory, &installerPath,
+		&g_pawnIoSetupPhase, context->cancelEvent);
+	if (error == ERROR_SUCCESS && WaitForSingleObject(context->cancelEvent, 0) == WAIT_OBJECT_0)
+		error = ERROR_CANCELLED;
+	if (error == ERROR_SUCCESS)
+	{
+		TraySRuntimeLog(L"PawnIO setup: official download passed SHA-256 and Authenticode checks; requesting UAC.");
+		InterlockedExchange(&g_pawnIoSetupPhase, PAWNIO_SETUP_AUTHORIZING);
+		std::wstring parameters = L"--install-pawnio " + QuoteWindowsArgument(context->sid) +
+			L" " + QuoteWindowsArgument(installerPath);
+		SHELLEXECUTEINFOW execute{};
+		execute.cbSize = sizeof(execute);
+		execute.hwnd = context->notifyWindow;
+		execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+		execute.lpVerb = L"runas";
+		execute.lpFile = context->executablePath.c_str();
+		execute.lpParameters = parameters.c_str();
+		execute.nShow = SW_HIDE;
+		if (!ShellExecuteExW(&execute)) error = GetLastError();
+		else if (!execute.hProcess) error = ERROR_INVALID_HANDLE;
+		else
+		{
+			InterlockedExchange(&g_pawnIoSetupPhase, PAWNIO_SETUP_INSTALLING);
+			HANDLE waitHandles[] = { execute.hProcess, context->cancelEvent };
+			DWORD wait = WaitForMultipleObjects(ARRAYSIZE(waitHandles), waitHandles, FALSE, INFINITE);
+			if (wait == WAIT_OBJECT_0)
+			{
+				if (!GetExitCodeProcess(execute.hProcess, &error)) error = GetLastError();
+			}
+			else error = wait == WAIT_OBJECT_0 + 1 ? ERROR_CANCELLED : ERROR_INSTALL_FAILURE;
+			// Closing the tray never terminates the elevated installer mid-install.
+			CloseHandle(execute.hProcess);
+		}
+	}
+	RemovePawnIoDownload(directory, installerPath);
+	if (SUCCEEDED(comResult)) CoUninitialize();
+	HWND notifyWindow = context->notifyWindow;
+	delete context;
+	InterlockedExchange(&g_pawnIoSetupError, static_cast<LONG>(error));
+	InterlockedExchange(&g_pawnIoSetupPhase, PAWNIO_SETUP_FINISHED);
+	TraySRuntimeLogFormat(L"PawnIO setup: finished, result=%lu", error);
+	PostMessageW(notifyWindow, WM_APP_TRAYS_PAWNIO_SETUP, error, 0);
+	return error;
+}
+
+static BOOL LaunchPawnIoSetup(HWND owner)
+{
+	ReapPawnIoSetupWorker();
+	if (g_pawnIoSetupThread || g_cpuSensorBrokerSetupInProgress) return TRUE;
+	if (!IsPawnIoSetupSupported())
+	{
+		MessageBoxW(owner, L"内置 PawnIO 安装仅支持 x64 Windows。当前系统暂不支持此硬件温度安装流程。",
+			L"TrayS CPU 温度", MB_OK | MB_ICONINFORMATION);
+		return FALSE;
+	}
+	std::wstring sid;
+	WCHAR executablePath[32768] = {};
+	DWORD length = GetModuleFileNameW(NULL, executablePath, ARRAYSIZE(executablePath));
+	if (!GetCurrentUserSidString(&sid) || !length || length >= ARRAYSIZE(executablePath)) return FALSE;
+	if (MessageBoxW(owner,
+		L"读取 CPU 硬件温度需要 PawnIO 驱动，本机尚未安装。\n\nTrayS 将从官方 GitHub 下载 PawnIO 2.2.0（约 3.3 MB），校验安装包后请求一次管理员授权，安装驱动并配置温度读取后台。请使用当前 Windows 管理员账户批准。\n\nPawnIO 是系统驱动，删除 TrayS 文件夹不会卸载它；可在 Windows 已安装的应用中卸载。是否下载并安装？",
+		L"安装 CPU 温度组件", MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) != IDYES)
+		return FALSE;
+	g_pawnIoSetupCancelEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+	if (!g_pawnIoSetupCancelEvent) return FALSE;
+	PawnIoSetupContext* context = new (std::nothrow) PawnIoSetupContext;
+	if (!context)
+	{
+		CloseHandle(g_pawnIoSetupCancelEvent);
+		g_pawnIoSetupCancelEvent = NULL;
+		return FALSE;
+	}
+	context->notifyWindow = IsWindow(hMain) ? hMain : owner;
+	context->sid = sid;
+	context->executablePath = executablePath;
+	context->cancelEvent = g_pawnIoSetupCancelEvent;
+	InterlockedExchange(&g_pawnIoSetupError, ERROR_SUCCESS);
+	InterlockedExchange(&g_pawnIoSetupPhase, PAWNIO_SETUP_DOWNLOADING);
+	g_pawnIoSetupThread = CreateThread(NULL, 0, PawnIoSetupThreadProc, context, 0, NULL);
+	if (!g_pawnIoSetupThread)
+	{
+		DWORD error = GetLastError();
+		delete context;
+		CloseHandle(g_pawnIoSetupCancelEvent);
+		g_pawnIoSetupCancelEvent = NULL;
+		InterlockedExchange(&g_pawnIoSetupError, static_cast<LONG>(error));
+		InterlockedExchange(&g_pawnIoSetupPhase, PAWNIO_SETUP_FINISHED);
+		MessageBoxW(owner, L"无法开始下载，请在设置中点击“下载安装”重试。", L"TrayS CPU 温度", MB_OK | MB_ICONWARNING);
+		return FALSE;
+	}
+	if (IsWindow(hSetting)) UpdateCpuTemperatureStatus(hSetting);
+	return TRUE;
+}
+
+static BOOL TryOfferPawnIoSetup(HWND owner)
+{
+	HKEY key = NULL;
+	DWORD disposition = 0;
+	if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\TrayS\\CpuSensorBroker", 0, NULL, 0,
+		KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &key, &disposition) != ERROR_SUCCESS) return FALSE;
+	DWORD offered = 0, type = 0, bytes = sizeof(offered);
+	RegQueryValueExW(key, L"PawnIo220InstallOffered", NULL, &type, reinterpret_cast<LPBYTE>(&offered), &bytes);
+	BOOL alreadyOffered = type == REG_DWORD && bytes == sizeof(offered) && offered != 0;
+	BOOL shouldOffer = ShouldOfferPawnIoSetup(TraySave.bMonitorTemperature, g_pawnIoProbeError,
+		IsPawnIoSetupInProgress() || g_cpuSensorBrokerSetupInProgress, alreadyOffered) && IsPawnIoSetupSupported();
+	if (shouldOffer)
+	{
+		offered = 1;
+		shouldOffer = RegSetValueExW(key, L"PawnIo220InstallOffered", 0, REG_DWORD,
+			reinterpret_cast<const BYTE*>(&offered), sizeof(offered)) == ERROR_SUCCESS;
+	}
+	RegCloseKey(key);
+	return shouldOffer ? LaunchPawnIoSetup(owner) : FALSE;
+}
+
 static BOOL LaunchCpuSensorBrokerSetup(HWND owner)
 {
 	// The user can click repeatedly while the UAC installer is still copying
 	// files. Keep one child process and one consent prompt in flight at a time.
 	if (g_cpuSensorBrokerSetupInProgress)
 		return TRUE;
+	if (IsPawnIoSetupInProgress()) return TRUE;
+	if (IsPawnIoMissingError(g_pawnIoProbeError)) return LaunchPawnIoSetup(owner);
 	if (IsCpuSensorBrokerTaskInstalled() && !g_cpuSensorBrokerTaskNeedsRepair)
 		return TRUE;
 	std::wstring sid;
@@ -3043,6 +3236,9 @@ static BOOL MarkCpuSensorBrokerRepairPromptAttempted()
 
 static BOOL TryAutoLaunchCpuSensorBrokerSetup(HWND owner)
 {
+	if (g_runningCpuSensorBroker || IsPawnIoSetupInProgress()) return FALSE;
+	if (TraySave.bMonitorTemperature && IsPawnIoMissingError(g_pawnIoProbeError))
+		return TryOfferPawnIoSetup(owner);
 	if (!TraySave.bMonitorTemperature || g_pawnIoProbeError != ERROR_ACCESS_DENIED ||
 		g_cpuSensorBrokerSetupInProgress)
 		return FALSE;
@@ -3181,7 +3377,7 @@ static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError)
 
 static void MaybeRestartCpuSensorBroker()
 {
-	if (g_runningCpuSensorBroker || g_cpuSensorBrokerSetupInProgress)
+	if (g_runningCpuSensorBroker || g_cpuSensorBrokerSetupInProgress || IsPawnIoSetupInProgress())
 		return;
 	LONG now = static_cast<LONG>(GetTickCount());
 	LONG previous = InterlockedCompareExchange(&g_cpuSensorBrokerRestartTick, now, 0);
@@ -3298,6 +3494,11 @@ static BOOL DispatchCpuSensorCommandLine(int* exitCode)
 	else if (argumentCount >= 3 && lstrcmpiW(arguments[1], L"--install-cpu-sensor") == 0)
 	{
 		*exitCode = InstallCpuSensorBroker(arguments[2]) ? ERROR_SUCCESS : ERROR_INSTALL_FAILURE;
+		dispatched = TRUE;
+	}
+	else if (argumentCount == 4 && lstrcmpiW(arguments[1], L"--install-pawnio") == 0)
+	{
+		*exitCode = static_cast<int>(InstallPawnIoAndCpuSensorBroker(arguments[2], arguments[3]));
 		dispatched = TRUE;
 	}
 	LocalFree(arguments);
@@ -3625,6 +3826,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 			// to clean up and can make the UI appear hung forever.
 			bRealClose = TRUE;
 			BOOL workersStopped = TRUE;
+			if (g_pawnIoSetupCancelEvent) SetEvent(g_pawnIoSetupCancelEvent);
+			if (g_pawnIoSetupThread)
+			{
+				if (WaitForSingleObject(g_pawnIoSetupThread, 3000) != WAIT_OBJECT_0)
+					workersStopped = FALSE;
+				else ReapPawnIoSetupWorker();
+			}
 			if (hGetDataThread)
 			{
 				DWORD waitResult = WaitForSingleObject(hGetDataThread, 3000);
@@ -7767,6 +7975,42 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		TraySRuntimeLog(L"WM_TRAYS received");
 		OpenSetting();
 		break;
+	case WM_APP_TRAYS_PAWNIO_SETUP:
+	{
+		// The worker posts its result just before returning. Wait only for that
+		// final return so its thread/event handles are released on this UI thread.
+		if (g_pawnIoSetupThread) WaitForSingleObject(g_pawnIoSetupThread, 200);
+		ReapPawnIoSetupWorker();
+		DWORD result = static_cast<DWORD>(wParam);
+		if (result == ERROR_SUCCESS || result == ERROR_SUCCESS_REBOOT_REQUIRED)
+		{
+			LoadTemperatureDLL();
+			(void)StartCpuSensorBrokerTaskIfInstalled();
+			if (TraySave.bMonitorTemperature && !bRing0)
+			{
+				bRing0 = TRUE;
+				SetWH();
+				AdjustWindowPos();
+			}
+			if (result == ERROR_SUCCESS_REBOOT_REQUIRED)
+				MessageBoxW(hDlg, L"CPU 温度组件已安装。官方驱动安装器要求重新启动 Windows 后生效，请在方便时重启。",
+					L"TrayS CPU 温度", MB_OK | MB_ICONINFORMATION);
+		}
+		else if (result != ERROR_CANCELLED)
+		{
+			WCHAR message[600] = {}, detail[256] = {};
+			FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+				NULL, result, 0, detail, ARRAYSIZE(detail), NULL);
+			LPCWSTR guidance = result == ERROR_BAD_LENGTH || result >= 0x80000000UL ?
+				L"官方安装包校验未通过，已拒绝执行。" :
+				L"驱动下载或安装未能完成，请检查网络及管理员授权。";
+			swprintf_s(message, ARRAYSIZE(message),
+				L"%ls\n\n错误：0x%08lX %ls\n\n可在设置中点击“下载安装”重试。", guidance, result, detail);
+			MessageBoxW(hDlg, message, L"TrayS CPU 温度", MB_OK | MB_ICONWARNING);
+		}
+		if (IsWindow(hSetting)) UpdateCpuTemperatureStatus(hSetting);
+	}
+	break;
 	case WM_APP_TRAYS_UPDATE:
 	{
 		TRAYS_UPDATE_MESSAGE* update = (TRAYS_UPDATE_MESSAGE*)lParam;
