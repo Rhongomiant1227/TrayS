@@ -23,7 +23,7 @@ $arguments = @(
     (Join-Path $PSScriptRoot 'tests\cpu-temperature.cpp'),
     (Join-Path $sourceDirectory 'Function.cpp'), (Join-Path $sourceDirectory 'Update.cpp'),
     '-luser32', '-lgdi32', '-lcomctl32', '-lshell32', '-lole32', '-loleaut32', '-luuid',
-    '-loleacc', '-ladvapi32', '-lpsapi', '-liphlpapi', '-lwinhttp', '-lpdh', '-ldwmapi',
+    '-loleacc', '-ladvapi32', '-lpsapi', '-liphlpapi', '-lwinhttp', '-lpdh', '-ldwmapi', '-lversion',
     '-o', $exePath
 )
 & (Join-Path $toolchain.FullName 'bin\clang++.exe') @arguments

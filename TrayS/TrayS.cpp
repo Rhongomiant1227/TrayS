@@ -17,8 +17,11 @@
 #include <sddl.h>
 #include <string>
 #include <vector>
+#include <new>
+#include <winver.h>
 #include <taskschd.h>
 #include <shellapi.h>
+#pragma comment(lib, "Version.lib")
 static void ClearNetworkSnapshotUnlocked();
 static void ClearProcessSnapshotUnlocked();
 static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError);
@@ -64,6 +67,24 @@ static BOOL g_cpuSensorBrokerTaskNeedsRepair = FALSE;
 static BOOL g_cpuSensorBrokerTaskInstalled = FALSE;
 static LONG g_cpuSensorBrokerTraceTick = 0;
 static LONG g_cpuSensorBrokerRestartTick = 0;
+static volatile LONG g_localCpuHardwareSampleTick = 0;
+
+static BOOL HasFreshLocalCpuHardwareSample()
+{
+	LONG tick = InterlockedCompareExchange(&g_localCpuHardwareSampleTick, 0, 0);
+	return tick != 0 && GetTickCount() - static_cast<DWORD>(tick) <= 5000;
+}
+
+static BOOL IsCpuSensorBrokerSampleUsable(DWORD temperatureC, DWORD lastError)
+{
+	return lastError == ERROR_SUCCESS && temperatureC > 0 && temperatureC <= 255;
+}
+
+static BOOL AreCpuSensorBrokerVersionsEqual(DWORD appVersionMs, DWORD appVersionLs,
+	DWORD brokerVersionMs, DWORD brokerVersionLs)
+{
+	return appVersionMs == brokerVersionMs && appVersionLs == brokerVersionLs;
+}
 
 // Network providers are normally trusted Windows components, but adapter
 // enumeration is an externally supplied, variable-sized data boundary. Keep
@@ -1730,15 +1751,11 @@ int GetCpuTemp(DWORD Core, DWORD* secondaryTemperature = NULL, DWORD* hddTempera
 		BOOL brokerStateFresh = TryReadCpuSensorBrokerState(&brokerTemperature, &brokerError);
 		if (brokerStateFresh)
 		{
-			// Older broker builds could publish an ACPI fallback together with
-			// ERROR_FILE_NOT_FOUND/ERROR_PATH_NOT_FOUND. Treat that combination as
-			// unavailable too, so upgrading the tray UI takes effect even before the
-			// old broker process has been restarted.
-			if (brokerError == ERROR_FILE_NOT_FOUND || brokerError == ERROR_PATH_NOT_FOUND ||
-				brokerError == ERROR_ACCESS_DENIED)
-				return 0;
-			return brokerTemperature > 0 && brokerTemperature <= INT_MAX ?
-				(int)brokerTemperature : 0;
+			// Old broker builds could publish an ACPI fallback (often a static 28 C)
+			// while reporting that PawnIO was missing. A displayed temperature is
+			// valid only when the broker reports a successful hardware probe too.
+			return IsCpuSensorBrokerSampleUsable(brokerTemperature, brokerError) ?
+				static_cast<int>(brokerTemperature) : 0;
 		}
 		// An installed broker can disappear independently of the tray process
 		// (for example after a missed logon trigger or a transient LHM failure).
@@ -1773,6 +1790,8 @@ int GetCpuTemp(DWORD Core, DWORD* secondaryTemperature = NULL, DWORD* hddTempera
 			*secondaryTemperature = gpuTemperature != 0 ? gpuTemperature : packageTemperature;
 		}
 		DWORD cpuTemperature = TemperatureForDisplay(fCpu);
+		InterlockedExchange(&g_localCpuHardwareSampleTick,
+			cpuTemperature != 0 ? static_cast<LONG>(GetTickCount()) : 0);
 		if (cpuTemperature != 0)
 			return cpuTemperature <= INT_MAX ? (int)cpuTemperature : 0;
 	}
@@ -1866,8 +1885,9 @@ static void RefreshCpuSensorBrokerSetupState(BOOL taskInstalled)
 {
 	if (!g_cpuSensorBrokerSetupInProgress)
 		return;
-	if (taskInstalled || (g_cpuSensorBrokerSetupProcess &&
-		WaitForSingleObject(g_cpuSensorBrokerSetupProcess, 0) != WAIT_TIMEOUT))
+	BOOL setupFinished = g_cpuSensorBrokerSetupProcess ?
+		WaitForSingleObject(g_cpuSensorBrokerSetupProcess, 0) != WAIT_TIMEOUT : taskInstalled;
+	if (setupFinished)
 	{
 		if (g_cpuSensorBrokerSetupProcess)
 		{
@@ -1876,6 +1896,24 @@ static void RefreshCpuSensorBrokerSetupState(BOOL taskInstalled)
 		}
 		g_cpuSensorBrokerSetupInProgress = FALSE;
 	}
+}
+
+static LPCWSTR GetCpuSensorBrokerStatusText(BOOL taskInstalled, BOOL sampleFresh,
+	DWORD temperatureC, DWORD lastError, BOOL needsRepair)
+{
+	if (!taskInstalled)
+		return NULL;
+	// Until the protected binary is current, its published error and value may
+	// reflect stale code. Ask the user to repair that trusted reader first.
+	if (needsRepair)
+		return L"CPU：后台需更新";
+	if (sampleFresh && (lastError == ERROR_FILE_NOT_FOUND || lastError == ERROR_PATH_NOT_FOUND))
+		return L"CPU：需安装 PawnIO";
+	if (sampleFresh && lastError == ERROR_ACCESS_DENIED)
+		return L"CPU：后台权限异常";
+	if (sampleFresh && IsCpuSensorBrokerSampleUsable(temperatureC, lastError))
+		return L"CPU：硬件已读";
+	return sampleFresh ? L"CPU：后台无读数" : L"CPU：后台启动中";
 }
 
 static void UpdateCpuTemperatureStatus(HWND dialog)
@@ -1896,23 +1934,14 @@ static void UpdateCpuTemperatureStatus(HWND dialog)
 	AcquireSRWLockShared(&g_temperatureLock);
 	if (TraySave.bMonitorTemperature)
 	{
-		if (brokerHasFreshSample && brokerTemperature != 0)
-			status = L"CPU：硬件已读";
-		else if (brokerTaskInstalled && g_cpuSensorBrokerTaskNeedsRepair)
-			status = L"CPU：需修复一次";
-		else if (brokerTaskInstalled && brokerHasFreshSample &&
-			(brokerError == ERROR_FILE_NOT_FOUND || brokerError == ERROR_PATH_NOT_FOUND))
-			status = L"CPU：需安装 PawnIO";
-		else if (brokerTaskInstalled && brokerHasFreshSample && brokerError == ERROR_ACCESS_DENIED)
-			status = L"CPU：后台权限异常";
-		else if (brokerTaskInstalled && brokerHasFreshSample)
-			status = L"CPU：后台无读数";
-		else if (brokerTaskInstalled)
-			status = L"CPU：后台启动中";
+		LPCWSTR brokerStatus = GetCpuSensorBrokerStatusText(brokerTaskInstalled,
+			brokerHasFreshSample, brokerTemperature, brokerError, g_cpuSensorBrokerTaskNeedsRepair);
+		if (brokerStatus)
+			status = brokerStatus;
 		else if (g_cpuSensorBrokerSetupInProgress)
 			status = L"CPU：正在授权";
 		else if (hOHMA && GetTemperature)
-			status = L"CPU：硬件已读";
+			status = HasFreshLocalCpuHardwareSample() ? L"CPU：硬件已读" : L"CPU：硬件无读数";
 		else if (hasAcpiTemperaturePath)
 			status = L"CPU：Windows 热区";
 		else if (g_pawnIoProbeError == ERROR_ACCESS_DENIED)
@@ -1926,12 +1955,24 @@ static void UpdateCpuTemperatureStatus(HWND dialog)
 	SetDlgItemTextW(dialog, IDC_LABEL_CPU_TEMPERATURE_STATUS, status);
 	const BOOL brokerNeedsRepair = brokerTaskInstalled && g_cpuSensorBrokerTaskNeedsRepair;
 	SetDlgItemTextW(dialog, IDC_BUTTON_CPU_TEMPERATURE_ENABLE,
-		brokerNeedsRepair ? L"修复一次" :
-		(brokerTaskInstalled ? L"已授权" : (g_cpuSensorBrokerSetupInProgress ? L"授权中..." : L"授权一次")));
+		g_cpuSensorBrokerSetupInProgress ? L"处理中..." :
+		(brokerNeedsRepair ? L"修复一次" :
+		(brokerTaskInstalled ? L"后台已装" : L"授权一次")));
 	EnableWindow(GetDlgItem(dialog, IDC_BUTTON_CPU_TEMPERATURE_ENABLE),
 		(!brokerTaskInstalled || brokerNeedsRepair) && !g_cpuSensorBrokerSetupInProgress);
-	if (g_cpuSensorBrokerSetupInProgress)
-		SetTimer(dialog, 4, 1000, NULL);
+	// Keep the open settings page in sync with samples that arrive after DLL
+	// initialization or after the one-time elevated installer has exited.
+	if (g_cpuSensorBrokerSetupInProgress || TraySave.bMonitorTemperature)
+		SetTimer(dialog, 4, g_cpuSensorBrokerSetupInProgress ? 1000 : 3000, NULL);
+	static LPCWSTR lastStatus = NULL;
+	static BOOL lastRepairState = FALSE;
+	if (!lastStatus || wcscmp(lastStatus, status) != 0 || lastRepairState != brokerNeedsRepair)
+	{
+		lastStatus = status;
+		lastRepairState = brokerNeedsRepair;
+		TraySRuntimeLogFormat(L"CPU temperature: settings status=%ls taskInstalled=%d needsRepair=%d",
+			status, brokerTaskInstalled, brokerNeedsRepair);
+	}
 }
 
 static void FreeTemperatureDLLUnlocked();
@@ -1939,6 +1980,7 @@ static void FreeTemperatureDLLUnlocked();
 void LoadTemperatureDLL()
 {
 	AcquireSRWLockExclusive(&g_temperatureLock);
+	InterlockedExchange(&g_localCpuHardwareSampleTick, 0);
 	if (hOHMA || hNVDLL || hATIDLL || hThermalPDH || hThermalQuery)
 	{
 		FreeTemperatureDLLUnlocked();
@@ -2402,6 +2444,61 @@ static BOOL RunSchtasksCommand(const std::wstring& arguments, DWORD timeoutMs = 
 	return waitResult == WAIT_OBJECT_0 && exitCode == ERROR_SUCCESS;
 }
 
+static BOOL ReadFixedFileVersion(const std::wstring& path, VS_FIXEDFILEINFO* version)
+{
+	if (path.empty() || !version)
+		return FALSE;
+	DWORD ignored = 0;
+	DWORD bytes = GetFileVersionInfoSizeW(path.c_str(), &ignored);
+	if (bytes == 0 || bytes > 1024u * 1024u)
+		return FALSE;
+	BYTE* data = new (std::nothrow) BYTE[bytes];
+	if (!data)
+		return FALSE;
+	BOOL read = GetFileVersionInfoW(path.c_str(), 0, bytes, data);
+	VS_FIXEDFILEINFO* fixedInfo = NULL;
+	UINT fixedInfoBytes = 0;
+	BOOL valid = read && VerQueryValueW(data, L"\\",
+		reinterpret_cast<LPVOID*>(&fixedInfo), &fixedInfoBytes) &&
+		fixedInfo != NULL && fixedInfoBytes >= sizeof(VS_FIXEDFILEINFO) &&
+		fixedInfo->dwSignature == 0xFEEF04BD;
+	if (valid)
+		*version = *fixedInfo;
+	delete[] data;
+	return valid;
+}
+
+static BOOL IsCpuSensorBrokerBinaryCurrent(const std::wstring& sid)
+{
+	std::wstring installDirectory;
+	if (!GetCpuSensorBrokerNames(sid, NULL, NULL, NULL, &installDirectory))
+		return FALSE;
+	std::wstring brokerPath = installDirectory + L"\\TrayS.exe";
+	WCHAR appPath[32768] = {};
+	DWORD appPathLength = GetModuleFileNameW(NULL, appPath, ARRAYSIZE(appPath));
+	if (appPathLength == 0 || appPathLength >= ARRAYSIZE(appPath))
+		return FALSE;
+	VS_FIXEDFILEINFO appVersion{};
+	VS_FIXEDFILEINFO brokerVersion{};
+	if (!ReadFixedFileVersion(appPath, &appVersion) ||
+		!ReadFixedFileVersion(brokerPath, &brokerVersion))
+	{
+		TraySRuntimeLog(L"CPU temperature: cannot read the tray or protected broker version; broker repair is required.");
+		return FALSE;
+	}
+	BOOL current = AreCpuSensorBrokerVersionsEqual(appVersion.dwFileVersionMS,
+		appVersion.dwFileVersionLS, brokerVersion.dwFileVersionMS, brokerVersion.dwFileVersionLS);
+	if (!current)
+	{
+		TraySRuntimeLogFormat(L"CPU temperature: protected broker version is outdated; tray=%u.%u.%u.%u broker=%u.%u.%u.%u",
+			HIWORD(appVersion.dwFileVersionMS), LOWORD(appVersion.dwFileVersionMS),
+			HIWORD(appVersion.dwFileVersionLS), LOWORD(appVersion.dwFileVersionLS),
+			HIWORD(brokerVersion.dwFileVersionMS), LOWORD(brokerVersion.dwFileVersionMS),
+			HIWORD(brokerVersion.dwFileVersionLS), LOWORD(brokerVersion.dwFileVersionLS));
+	}
+	return current;
+}
+
 static BOOL IsCpuSensorBrokerTaskInstalled()
 {
 	g_cpuSensorBrokerTaskInstalled = FALSE;
@@ -2419,6 +2516,8 @@ static BOOL IsCpuSensorBrokerTaskInstalled()
 	// state so the one-time elevated setup can repair it during an upgrade.
 	BOOL needsRepair = FALSE;
 	if (!QueryCpuSensorTaskBatteryPolicy(taskName, &needsRepair))
+		needsRepair = TRUE;
+	if (!IsCpuSensorBrokerBinaryCurrent(sid))
 		needsRepair = TRUE;
 	g_cpuSensorBrokerTaskNeedsRepair = needsRepair;
 	g_cpuSensorBrokerTaskInstalled = TRUE;
@@ -2744,22 +2843,53 @@ static BOOL InstallCpuSensorBroker(const std::wstring& expectedSid)
 		L"System.Security.AccessControl.dll", L"System.Security.Principal.Windows.dll",
 		L"System.Threading.AccessControl.dll", L"System.Threading.Tasks.Extensions.dll"
 	};
+	WCHAR sourceExecutable[32768] = {};
+	DWORD sourceLength = GetModuleFileNameW(NULL, sourceExecutable, ARRAYSIZE(sourceExecutable));
+	if (sourceLength == 0 || sourceLength >= ARRAYSIZE(sourceExecutable))
+		return FALSE;
+	std::wstring sourceDirectory = sourceExecutable;
+	SIZE_T sourceSeparator = sourceDirectory.find_last_of(L"\\/");
+	if (sourceSeparator == std::wstring::npos)
+		return FALSE;
+	sourceDirectory.resize(sourceSeparator + 1);
+	// An incomplete download must not stop or partly replace a working broker.
 	for (const WCHAR* fileName : runtimeFiles)
 	{
-		WCHAR sourcePath[32768] = {};
-		DWORD sourceLength = GetModuleFileNameW(NULL, sourcePath, ARRAYSIZE(sourcePath));
-		if (sourceLength == 0 || sourceLength >= ARRAYSIZE(sourcePath))
+		std::wstring sourcePath = sourceDirectory + fileName;
+		DWORD attributes = GetFileAttributesW(sourcePath.c_str());
+		if (attributes == INVALID_FILE_ATTRIBUTES ||
+			(attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+		{
+			MessageBoxW(NULL, L"发布包的后台运行文件不完整。原有后台未停止，请完整解压发布包后重试。",
+				L"TrayS CPU 温度", MB_OK | MB_ICONERROR);
 			return FALSE;
-		WCHAR* slash = wcsrchr(sourcePath, L'\\');
-		if (!slash)
-			return FALSE;
-		lstrcpyW(slash + 1, fileName);
+		}
+	}
+	// Replacing an outdated protected broker while it is running can fail with
+	// a sharing violation. Stop only this task after validating the full payload.
+	if (RunSchtasksCommand(L"/Query /TN " + QuoteWindowsArgument(taskName)))
+	{
+		TraySRuntimeLog(L"CPU temperature: stopping the existing broker before protected-file update.");
+		(void)RunSchtasksCommand(L"/End /TN " + QuoteWindowsArgument(taskName));
+	}
+	for (const WCHAR* fileName : runtimeFiles)
+	{
+		std::wstring sourcePath = sourceDirectory + fileName;
 		std::wstring destinationPath = installDirectory + L"\\" + fileName;
 		DWORD destinationAttributes = GetFileAttributesW(destinationPath.c_str());
 		if (destinationAttributes != INVALID_FILE_ATTRIBUTES &&
 			(destinationAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
 			return FALSE;
-		if (!CopyFileW(sourcePath, destinationPath.c_str(), FALSE) ||
+		BOOL copied = FALSE;
+		DWORD copyStarted = GetTickCount();
+		do
+		{
+			copied = CopyFileW(sourcePath.c_str(), destinationPath.c_str(), FALSE);
+			if (copied || (GetLastError() != ERROR_SHARING_VIOLATION && GetLastError() != ERROR_LOCK_VIOLATION))
+				break;
+			Sleep(100); // Task Scheduler may still be releasing the old image.
+		} while (GetTickCount() - copyStarted < 5000);
+		if (!copied ||
 			!SetProtectedCpuSensorPathSecurity(destinationPath, currentSid, FALSE, FALSE))
 		{
 			MessageBoxW(NULL,
@@ -2809,7 +2939,7 @@ static BOOL LaunchCpuSensorBrokerSetup(HWND owner)
 		return FALSE;
 	}
 	if (MessageBoxW(owner,
-		L"TrayS 将请求一次管理员授权，把仅负责读取 CPU 温度的后台程序安装到受保护的 Program Files 目录，并设置为当前用户登录时启动。请使用当前 Windows 管理员账户批准；使用另一个管理员账户会被拒绝。\n\n托盘界面仍以普通权限运行；后续登录启动后台程序时不会再弹出 UAC。TrayS 不会安装或修改 PawnIO 驱动。继续吗？",
+		L"TrayS 将请求一次管理员授权，把负责读取 CPU 温度的后台程序安装或更新到受保护的 Program Files 目录，并设置为当前用户登录时启动。请使用当前 Windows 管理员账户批准；使用另一个管理员账户会被拒绝。\n\n此授权只负责后台程序，不会安装 PawnIO 驱动；硬件读取还需要官方 PawnIO 已安装并可用。托盘界面仍以普通权限运行。继续吗？",
 		L"启用 CPU 硬件温度", MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) != IDYES)
 		return FALSE;
 	WCHAR executablePath[32768] = {};
@@ -2919,9 +3049,9 @@ static BOOL TryAutoLaunchCpuSensorBrokerSetup(HWND owner)
 	BOOL taskInstalled = IsCpuSensorBrokerTaskInstalled();
 	if (taskInstalled && g_cpuSensorBrokerTaskNeedsRepair)
 	{
-		// A previous release left the task on the default battery policy. This
-		// migration needs one elevated re-registration, but it is persisted
-		// separately so startup never prompts repeatedly after a decline.
+		// A previous release may have an outdated broker binary or battery
+		// policy. Updating protected files needs one elevated repair, but the
+		// attempt is persisted so startup never prompts repeatedly after decline.
 		if (HasCpuSensorBrokerRepairPromptBeenAttempted())
 		{
 			// A previous consent attempt may have been cancelled or failed. Do
@@ -2933,11 +3063,11 @@ static BOOL TryAutoLaunchCpuSensorBrokerSetup(HWND owner)
 		}
 		if (!MarkCpuSensorBrokerRepairPromptAttempted())
 		{
-			TraySRuntimeLog(L"CPU temperature: could not persist the battery-policy repair prompt state; use settings to retry.");
+			TraySRuntimeLog(L"CPU temperature: could not persist the broker repair prompt state; use settings to retry.");
 			return FALSE;
 		}
 		g_cpuSensorBrokerAutoPromptAttempted = TRUE;
-		TraySRuntimeLog(L"CPU temperature: requesting one-time broker repair for battery power.");
+		TraySRuntimeLog(L"CPU temperature: requesting one-time protected broker repair.");
 		return LaunchCpuSensorBrokerSetup(owner);
 	}
 	if (taskInstalled)
@@ -3041,8 +3171,8 @@ static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError)
 	{
 		if (temperatureC && temperature > 0)
 			*temperatureC = static_cast<DWORD>(temperature);
-		if (lastError && error >= 0)
-			*lastError = static_cast<DWORD>(error);
+		if (lastError)
+			*lastError = error >= 0 ? static_cast<DWORD>(error) : ERROR_INVALID_DATA;
 	}
 	UnmapViewOfFile(state);
 	CloseHandle(mapping);
@@ -3051,16 +3181,16 @@ static BOOL TryReadCpuSensorBrokerState(DWORD* temperatureC, DWORD* lastError)
 
 static void MaybeRestartCpuSensorBroker()
 {
-	if (g_runningCpuSensorBroker)
+	if (g_runningCpuSensorBroker || g_cpuSensorBrokerSetupInProgress)
 		return;
 	LONG now = static_cast<LONG>(GetTickCount());
 	LONG previous = InterlockedCompareExchange(&g_cpuSensorBrokerRestartTick, now, 0);
 	if (previous != 0 && static_cast<DWORD>(now - previous) < 5000)
 		return;
 	InterlockedExchange(&g_cpuSensorBrokerRestartTick, now);
-	// Do not attempt a repair from the sampling thread. Re-registering an old
-	// task requires the one-time elevated settings flow, which is initiated on
-	// the UI thread. Starting an already-correct task is a normal user action.
+	// Do not race an elevated repair by restarting the old executable while it
+	// is being replaced. A version-mismatched task requires the one-time settings
+	// flow; starting an already-current task is a normal user action.
 	if (IsCpuSensorBrokerTaskInstalled() && !g_cpuSensorBrokerTaskNeedsRepair)
 		(void)StartCpuSensorBrokerTaskIfInstalled();
 }
@@ -3118,16 +3248,35 @@ static int RunCpuSensorBrokerMode()
 	g_runningCpuSensorBroker = TRUE;
 	LoadTemperatureDLL();
 	TraySRuntimeLog(L"CPU sensor broker started; tray UI remains unelevated.");
+	DWORD providerRetryTick = GetTickCount();
+	DWORD providerLogTick = 0;
 	for (;;)
 	{
+		DWORD now = GetTickCount();
+		if ((!hOHMA || !GetTemperature) && now - providerRetryTick >= 15000)
+		{
+			// Recover if the user installs/enables the prerequisite after startup.
+			// This only probes the existing device; it never installs/starts it.
+			providerRetryTick = now;
+			LoadTemperatureDLL();
+		}
 		// Broker mode is the privileged LHM/PawnIO path.  Do not let the shared
 		// state become contaminated by a static ACPI thermal-zone value when the
 		// protected sensor device is missing or temporarily unavailable.
 		int temperature = GetCpuTemp(1, NULL, NULL, FALSE);
+		DWORD sampleError = g_pawnIoProbeError;
+		if (temperature == 0 && sampleError == ERROR_SUCCESS)
+			sampleError = ERROR_NO_DATA;
 		InterlockedExchange(&state->temperatureC, temperature > 0 ? temperature : 0);
-		InterlockedExchange(&state->lastError, static_cast<LONG>(g_pawnIoProbeError));
+		InterlockedExchange(&state->lastError, static_cast<LONG>(sampleError));
 		InterlockedExchange(&state->sampleTick, static_cast<LONG>(GetTickCount()));
 		InterlockedExchange(&state->ready, 1);
+		if (providerLogTick == 0 || now - providerLogTick >= 10000)
+		{
+			providerLogTick = now;
+			TraySRuntimeLogFormat(L"CPU sensor broker: hardware sample temp=%d error=%lu monitorLoaded=%d",
+				temperature, sampleError, hOHMA != NULL && GetTemperature != NULL);
+		}
 		Sleep(1000);
 	}
 }

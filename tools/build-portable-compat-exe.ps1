@@ -124,7 +124,7 @@ $exePath = Join-Path $OutputDirectory ('TrayS-compat-win11-{0}.exe' -f $architec
 $linkLibraries = @(
     '-luser32', '-lgdi32', '-lcomctl32', '-lshell32', '-lole32', '-loleaut32', '-luuid',
     '-loleacc', '-ladvapi32', '-lpsapi', '-liphlpapi', '-lwinhttp', '-lpdh',
-    '-ldwmapi'
+    '-ldwmapi', '-lversion'
 )
 Write-Host ("Linking a self-contained {0} GUI executable" -f $architectureLabel)
 # _DEBUG selects the regular wWinMain path in the legacy source. The binary is

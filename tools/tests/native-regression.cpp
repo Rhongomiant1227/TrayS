@@ -272,11 +272,13 @@ static void TestCpuTemperatureSources()
     DWORD hddTemperature = 0;
     Check(GetCpuTemp(1, &secondaryTemperature, &hddTemperature) == 55,
         "CPU package sensor lost priority to the ACPI thermal zone");
+    Check(HasFreshLocalCpuHardwareSample(), "A successful local CPU hardware sample was not recorded");
     Check(secondaryTemperature == 55 && hddTemperature == 0,
         "LHM secondary/disk readings were not returned to the caller");
     Check(reviewAcpiSamples == 0, "A usable CPU package unnecessarily sampled ACPI");
     reviewCpuTemperature = std::numeric_limits<float>::quiet_NaN();
     Check(GetCpuTemp(1) == 30, "Invalid hardware reading did not fall back to ACPI");
+    Check(!HasFreshLocalCpuHardwareSample(), "A loaded DLL with an invalid CPU sample was reported as hardware-read");
     reviewCpuTemperature = std::numeric_limits<float>::infinity();
     Check(GetCpuTemp(1) == 30, "Infinite hardware reading did not fall back to ACPI");
     reviewCpuTemperature = -1.0f;
@@ -347,6 +349,38 @@ static void TestCpuTemperatureLayoutAvailability()
 		"Local hardware monitor does not reserve a CPU temperature row");
 }
 
+static void TestCpuSensorBrokerSampleAndStatus()
+{
+	Check(IsCpuSensorBrokerSampleUsable(55, ERROR_SUCCESS),
+		"A successful in-range CPU hardware sample was rejected");
+	Check(!IsCpuSensorBrokerSampleUsable(28, ERROR_FILE_NOT_FOUND),
+		"A stale ACPI fallback was accepted as a hardware sample");
+	Check(!IsCpuSensorBrokerSampleUsable(55, ERROR_ACCESS_DENIED),
+		"A sample carrying a broker access error was accepted");
+	Check(!IsCpuSensorBrokerSampleUsable(0, ERROR_SUCCESS),
+		"A missing CPU sample was accepted as a temperature");
+	Check(!IsCpuSensorBrokerSampleUsable(300, ERROR_SUCCESS),
+		"An out-of-range CPU sample was accepted");
+	Check(wcscmp(GetCpuSensorBrokerStatusText(TRUE, TRUE, 28,
+		ERROR_FILE_NOT_FOUND, TRUE), L"CPU：后台需更新") == 0,
+		"A stale broker sample took priority over the required protected-binary repair");
+	Check(wcscmp(GetCpuSensorBrokerStatusText(TRUE, TRUE, 28,
+		ERROR_FILE_NOT_FOUND, FALSE), L"CPU：需安装 PawnIO") == 0,
+		"A current broker reporting missing PawnIO did not show the installation prerequisite");
+	Check(wcscmp(GetCpuSensorBrokerStatusText(TRUE, TRUE, 55,
+		ERROR_SUCCESS, FALSE), L"CPU：硬件已读") == 0,
+		"A valid CPU hardware sample was not reported as read");
+	Check(wcscmp(GetCpuSensorBrokerStatusText(TRUE, FALSE, 0,
+		ERROR_SUCCESS, TRUE), L"CPU：后台需更新") == 0,
+		"A version-mismatched broker was not identified for repair");
+	Check(GetCpuSensorBrokerStatusText(FALSE, FALSE, 0, ERROR_SUCCESS, FALSE) == NULL,
+		"An absent broker unexpectedly supplied broker status");
+	Check(AreCpuSensorBrokerVersionsEqual(0x00010007, 0x00080000,
+		0x00010007, 0x00080000), "Matching broker and tray versions were rejected");
+	Check(!AreCpuSensorBrokerVersionsEqual(0x00010007, 0x00080000,
+		0x00010007, 0x00060000), "An outdated protected broker was treated as current");
+}
+
 static void TestTemperatureSamplePublication()
 {
 	TRAYDATA sample{};
@@ -385,9 +419,13 @@ static void TestCpuSensorAuthorizationIsSerialized()
 	Check(LaunchCpuSensorBrokerSetup(NULL), "An already-running setup was treated as a failure");
 	Check(g_cpuSensorBrokerSetupProcess == inFlightSetup && g_cpuSensorBrokerSetupInProgress,
 		"A second authorization request replaced the in-flight setup process");
-	g_cpuSensorBrokerSetupInProgress = FALSE;
-	g_cpuSensorBrokerSetupProcess = NULL;
-	CloseHandle(inFlightSetup);
+	RefreshCpuSensorBrokerSetupState(TRUE);
+	Check(g_cpuSensorBrokerSetupProcess == inFlightSetup && g_cpuSensorBrokerSetupInProgress,
+		"The existing task caused an in-progress broker repair to be treated as finished");
+	SetEvent(inFlightSetup);
+	RefreshCpuSensorBrokerSetupState(TRUE);
+	Check(!g_cpuSensorBrokerSetupProcess && !g_cpuSensorBrokerSetupInProgress,
+		"Completed broker repair did not release its process handle and reset setup state");
 }
 
 int main()
@@ -416,6 +454,7 @@ int main()
         { "Composition and fullscreen vertical offsets", TestPopupLayout },
         { "CPU package priority, ACPI fallback and permission guidance", TestCpuTemperatureSources },
         { "CPU sensor broker keeps the temperature row visible", TestCpuTemperatureLayoutAvailability },
+		{ "CPU sensor broker validates sample errors and version status", TestCpuSensorBrokerSampleAndStatus },
         { "Temperature samples publish after providers finish", TestTemperatureSamplePublication },
         { "CPU sensor authorization prompt is automatic and one-time", TestCpuSensorAuthorizationRequestConditions },
         { "CPU sensor authorization cannot spawn duplicate prompts", TestCpuSensorAuthorizationIsSerialized }

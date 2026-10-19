@@ -36,7 +36,7 @@ Ryzen 9 9955HX 的 LHM 传感器路径依赖单独安装的 PawnIO 软件和已�
 
 1.7.1 曾在本工作目录使用 VS 2022 Build Tools / MSVC v143 完成 x64 与 Win32 Release 构建，并运行静态兼容性校验和更新器多文件安装/回滚模拟。该测试不安装、不启动 PawnIO，也不加载 WinRing0。
 
-本机 AMD Ryzen 9 9955HX / TOPC YUNIK ITX WIFI D5 没有可用的 ACPI 温度实例。用户安装官方 PawnIO 2.2.0 后，在管理员 Windows PowerShell 中运行 LHM 0.9.6 诊断，连续 5 次读到有效的 Tctl/Tdie（52.375–55.125°C）、CCD1 和 CCD2 温度。普通权限打开同一设备返回 Win32 5。此结果确认本机的 LHM 传感器和权限边界，不代表其他机型已经认证。AMD、Intel、多显卡和不同 Windows build 的完整实机回归仍需逐项完成：
+历史实测环境 AMD Ryzen 9 9955HX / TOPC YUNIK ITX WIFI D5 没有可用的 ACPI 温度实例。用户安装官方 PawnIO 2.2.0 后，在管理员 Windows PowerShell 中运行 LHM 0.9.6 诊断，连续 5 次读到有效的 Tctl/Tdie（52.375–55.125°C）、CCD1 和 CCD2 温度。普通权限打开同一设备返回 Win32 5。此结果确认当时该配置的 LHM 传感器和权限边界，不代表其他机型已经认证。1.7.8 复现环境为 Intel i5-1235U，设备探测返回 Win32 2 且未发现 PawnIO 服务；目前只能验证缺失提示和后台版本修复，不能把旧后台的 28°C 当作实读成功。AMD、Intel、多显卡和不同 Windows build 的完整实机回归仍需逐项完成：
 
 | 平台/场景 | 需要确认的行为 |
 | --- | --- |
@@ -101,9 +101,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-compatibili
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 ```
 
-默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.7_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.7_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
+默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.8_x64\` 与对应的 zip。x86 构建使用 `-Platform Win32 -PackageName TrayS_1.7.8_x86`。标准包复制新构建的 `TrayS.exe`、架构对应的 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
 
 启用温度监控并检测到 PawnIO 拒绝访问时，TrayS 会自动发起一次授权请求。尝试状态保存在当前用户注册表中，因此拒绝后不会在每次启动重复提示；用户仍可从设置页手动重试。温度采样会先在局部变量中完成，再发布整轮读数，避免 UI 在读取期间显示短暂的 `--`。
+
+“后台已装”只说明当前用户的计划任务已经安装，并不代表温度已成功采样。设置页只有在 broker 返回新鲜、非零、范围有效且 `lastError` 为成功的值时才显示“硬件已读”；PawnIO 设备缺失或权限异常会显示具体原因。主程序升级后，旧版受保护 broker 不会自动覆盖；1.7.8 会检测其文件版本并把按钮改为“修复一次”。修复会先停止该计划任务，再将当前版本的 EXE 和传感器运行依赖复制到受保护目录。
 
 如果本机没有 MSBuild，可以把 VS 2022 Build Tools 安装到仓库内的 `.buildtools\vs` 目录，LLVM-MinGW 和 .NET Framework 引用程序集也放在 `.buildtools` 下。构建完成后，先运行 `tools\uninstall-build-tools.ps1`，让官方 Visual Studio Installer 完成卸载并清理该目录，再删除整个仓库目录；直接删除 `.buildtools` 会留下安装器注册信息和缓存，不应作为卸载步骤。
 
