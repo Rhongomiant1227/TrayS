@@ -172,6 +172,6 @@
   </ImportGroup>
 
   <Target Name="RejectUnsupportedArchitecture" BeforeTargets="PrepareForBuild" Condition="'$(Platform)' != 'x64'">
-    <Error Text="TrayS 1.7.9 and later support x64 builds only." />
+    <Error Text="TrayS 1.7.10 and later support x64 builds only." />
   </Target>
 </Project>

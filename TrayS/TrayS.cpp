@@ -220,6 +220,99 @@ static const int kMonitorOffsetLimit = 4096;
 static const UINT kMenuSettingCommand = 32801;
 static const UINT WM_APP_TRAYS_MONITOR_REFRESH = WM_APP + 0x41;
 static const UINT WM_APP_TRAYS_THEME_CHANGED = WM_APP + 0x42;
+static void TraySRuntimeLogFormat(const wchar_t* format, ...);
+
+// ABN_FULLSCREENAPP is not delivered consistently by borderless DXGI games
+// and some composition-based fullscreen surfaces. Keep a second, conservative
+// detector so the monitor overlay is hidden even when Explorer does not send the
+// AppBar notification. This state is refreshed from AdjustWindowPos(), which
+// already runs on the UI timer while the overlay is active.
+static BOOL g_borderlessFullscreen = FALSE;
+
+static BOOL IsShellFullscreenExcludedWindow(HWND window)
+{
+	if (!IsWindow(window))
+		return TRUE;
+	if (window == hMain || window == hTaskBar || window == hSetting ||
+		window == hTray || window == hTaskWnd || window == hTaskListWnd ||
+		window == hStartWnd || window == hReBarWnd || window == hTrayNotifyWnd)
+		return TRUE;
+	DWORD processId = 0;
+	GetWindowThreadProcessId(window, &processId);
+	if (processId == GetCurrentProcessId())
+		return TRUE;
+	wchar_t className[128] = {};
+	if (!GetClassNameW(window, className, ARRAYSIZE(className)))
+		return TRUE;
+	// Desktop and Explorer taskbar surfaces can cover the monitor without being
+	// an application fullscreen window. Do not let those shell windows suppress
+	// the monitor after Explorer restarts or while the desktop is active.
+	return lstrcmpiW(className, L"Shell_TrayWnd") == 0 ||
+		lstrcmpiW(className, L"Shell_SecondaryTrayWnd") == 0 ||
+		lstrcmpiW(className, L"WorkerW") == 0 ||
+		lstrcmpiW(className, L"Progman") == 0 ||
+		lstrcmpiW(className, L"XamlExplorerHostIslandWindow") == 0;
+}
+
+static BOOL IsWindowRectCoveringMonitor(const RECT& windowRect, const RECT& monitorRect)
+{
+	// A two-pixel tolerance covers normal border rounding/DPI differences while
+	// rejecting maximized windows that leave a visible strip around the work area.
+	const LONG tolerance = 2;
+	return windowRect.left <= monitorRect.left + tolerance &&
+		windowRect.top <= monitorRect.top + tolerance &&
+		windowRect.right >= monitorRect.right - tolerance &&
+		windowRect.bottom >= monitorRect.bottom - tolerance;
+}
+
+static BOOL IsForegroundBorderlessFullscreen()
+{
+	HWND foreground = GetForegroundWindow();
+	if (IsShellFullscreenExcludedWindow(foreground) || !IsWindowVisible(foreground) || IsIconic(foreground))
+		return FALSE;
+	LONG_PTR foregroundStyle = GetWindowLongPtr(foreground, GWL_STYLE);
+	if (IsZoomed(foreground) && (foregroundStyle & (WS_CAPTION | WS_THICKFRAME)))
+		return FALSE;
+	HMONITOR foregroundMonitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
+	HMONITOR taskbarMonitor = IsWindow(hTaskBar) ?
+		MonitorFromWindow(hTaskBar, MONITOR_DEFAULTTONEAREST) : foregroundMonitor;
+	if (!foregroundMonitor || !taskbarMonitor || foregroundMonitor != taskbarMonitor)
+		return FALSE;
+	MONITORINFO monitorInfo{};
+	monitorInfo.cbSize = sizeof(monitorInfo);
+	RECT foregroundRect{};
+	if (!GetMonitorInfoW(foregroundMonitor, &monitorInfo) || !GetWindowRect(foreground, &foregroundRect))
+		return FALSE;
+	return IsWindowRectCoveringMonitor(foregroundRect, monitorInfo.rcMonitor);
+}
+
+static BOOL ShouldHideMonitorForFullscreen()
+{
+	// Query the foreground bounds as part of the guard as well as on the normal
+	// positioning timer. Theme/shell callbacks can arrive between timer ticks;
+	// they must not be allowed to raise the overlay over a borderless game.
+	// The topmost preference is an explicit opt-in to keep the monitor above a
+	// fullscreen application. Floating/custom positioning is independent of this
+	// choice and must never disable the normal fullscreen hiding rule.
+	return !TraySave.bMonitorTopmost &&
+		(bFullScreen || g_borderlessFullscreen || IsForegroundBorderlessFullscreen());
+}
+
+static BOOL ShouldEmbedMonitorInLegacyTaskbar()
+{
+	return !TraySave.bMonitorFloat && !TraySave.bMonitorTopmost &&
+		!bFullScreen && !g_borderlessFullscreen && hWin11UI == NULL;
+}
+
+static void RefreshBorderlessFullscreenState()
+{
+	BOOL detected = IsForegroundBorderlessFullscreen();
+	if (detected != g_borderlessFullscreen)
+	{
+		g_borderlessFullscreen = detected;
+		TraySRuntimeLogFormat(L"fullscreen borderless=%d appbar=%d", detected, bFullScreen);
+	}
+}
 
 // Portable diagnostic trail for modeless-window failures.
 static void TraySRuntimeLog(const wchar_t* message)
@@ -282,8 +375,9 @@ static void ResetTaskBarLayeredSurfaceForArgb(BOOL force = FALSE)
 		SetWindowPos(hTaskBar, NULL, 0, 0, 0, 0,
 			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
 		SetWindowLongPtr(hTaskBar, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
-		SetWindowPos(hTaskBar, HWND_TOPMOST, 0, 0, 0, 0,
-			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+		if (!ShouldHideMonitorForFullscreen())
+			SetWindowPos(hTaskBar, HWND_TOPMOST, 0, 0, 0, 0,
+				SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 	}
 	gTaskBarColorKeyed = FALSE;
 }
@@ -487,7 +581,7 @@ static void UpdateMonitorOffsetControls(HWND hDlg)
 
 static BOOL IsWin11ArgbTaskBar()
 {
-	return hWin11UI != NULL && !TraySave.bMonitorFloat && !bFullScreen;
+	return hWin11UI != NULL && !TraySave.bMonitorFloat && !ShouldHideMonitorForFullscreen();
 }
 
 // Keep all DLL loads inside the directories we explicitly trust. The
@@ -1574,7 +1668,12 @@ static void ConfigureTaskBarWindowMode()
 {
 	if (!IsWindow(hTaskBar))
 		return;
-	const BOOL embedInLegacyTaskbar = (!TraySave.bMonitorFloat && !bFullScreen && hWin11UI == NULL);
+	if (ShouldHideMonitorForFullscreen())
+	{
+		ShowWindow(hTaskBar, SW_HIDE);
+		return;
+	}
+	const BOOL embedInLegacyTaskbar = ShouldEmbedMonitorInLegacyTaskbar();
 	LONG_PTR oldStyle = GetWindowLongPtr(hTaskBar, GWL_STYLE);
 	LONG_PTR style = oldStyle;
 	if (embedInLegacyTaskbar)
@@ -1599,17 +1698,32 @@ static void ConfigureTaskBarWindowMode()
 
 	LONG_PTR oldExStyle = GetWindowLongPtr(hTaskBar, GWL_EXSTYLE);
 	LONG_PTR exStyle = oldExStyle;
+	if (embedInLegacyTaskbar)
+		exStyle &= ~WS_EX_TOPMOST;
+	else
+	{
+		// SetWindowPos(HWND_TOPMOST) controls the current z-order, but a
+		// composition/taskbar transition can recreate or reparent this dialog
+		// and leave the extended style stale. Keep the requested topmost state
+		// explicit so the setting survives those transitions and can be verified
+		// by the window manager as well as by the next positioning pass.
+		exStyle |= WS_EX_TOPMOST;
+	}
 	if (!TraySave.bMonitorFloat && !bFullScreen)
 		exStyle |= WS_EX_LAYERED;
 	if (exStyle != oldExStyle)
 		SetWindowLongPtr(hTaskBar, GWL_EXSTYLE, exStyle);
+	const BOOL hasTopmostStyle = (oldExStyle & WS_EX_TOPMOST) != 0;
+	const BOOL needsZOrderChange = embedInLegacyTaskbar ? hasTopmostStyle : !hasTopmostStyle;
 	if (style != oldStyle || exStyle != oldExStyle ||
-		(!embedInLegacyTaskbar && !(exStyle & WS_EX_TOPMOST)))
+		needsZOrderChange)
 	{
 		SetLastError(ERROR_SUCCESS);
-		BOOL zOrderResult = SetWindowPos(hTaskBar, embedInLegacyTaskbar ? NULL : HWND_TOPMOST, 0, 0, 0, 0,
+		HWND insertAfter = embedInLegacyTaskbar ?
+			(needsZOrderChange ? HWND_NOTOPMOST : NULL) : HWND_TOPMOST;
+		BOOL zOrderResult = SetWindowPos(hTaskBar, insertAfter, 0, 0, 0, 0,
 			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED |
-			(embedInLegacyTaskbar ? SWP_NOZORDER : 0));
+			(embedInLegacyTaskbar && !needsZOrderChange ? SWP_NOZORDER : 0));
 		if (!zOrderResult)
 			TraySRuntimeLogFormat(L"TaskBar zorder configure failed hwnd=%p err=%lu",
 				hTaskBar, GetLastError());
@@ -1666,6 +1780,8 @@ void OpenTimeDlg()
 
 void OpenTaskBar()
 {
+	if (ShouldHideMonitorForFullscreen())
+		return;
 	if (IsWindow(hTaskBar) == FALSE)
 	{		
 		if (TraySave.cMonitorColor[0] == RGB(1, 2, 3))
@@ -1717,7 +1833,7 @@ void OpenTaskBar()
 			}
 			else if (hWin11UI == NULL)
 				SetWindowCompositionAttribute(hTaskBar, ACCENT_ENABLE_TRANSPARENT, 0x00111111);
-			ShowWindow(hTaskBar, SW_SHOW);
+			ShowWindow(hTaskBar, ShouldHideMonitorForFullscreen() ? SW_HIDE : SW_SHOW);
 			// Layered/composition popups do not always receive an initial paint
 			// after Explorer attaches them to the taskbar.  Force the first frame
 			// here so the monitor is visible before the pointer enters its bounds.
@@ -5046,6 +5162,19 @@ void AdjustWindowPos()//设置信息窗口位置大小
 	}
 	if (!IsWindow(hTray))
 		return;
+	RefreshBorderlessFullscreenState();
+	if (ShouldHideMonitorForFullscreen())
+	{
+		if (IsWindow(hTaskBar))
+			ShowWindow(hTaskBar, SW_HIDE);
+		if (IsWindow(hTime))
+			ShowWindow(hTime, SW_HIDE);
+		if (IsWindow(hTaskTips))
+			ShowWindow(hTaskTips, SW_HIDE);
+		if (IsWindow(hPrice))
+			ShowWindow(hPrice, SW_HIDE);
+		return;
+	}
 	int dpi = pGetDpiForWindow(hTray);
 	if (dpi != iDPI && dpi != 0)
 	{
@@ -5232,7 +5361,7 @@ void AdjustWindowPos()//设置信息窗口位置大小
 					}
 				}
 			}
-			if (!bFullScreen && hWin11UI == NULL)
+			if (ShouldEmbedMonitorInLegacyTaskbar())
 				nleft -= trayrc.left;
 			nleft += GetMonitorOffsetX();
 			int h = wHeight * 2;
@@ -5264,7 +5393,7 @@ void AdjustWindowPos()//设置信息窗口位置大小
 				else
 					ntop = (trayrc.bottom - trayrc.top - h) / 2 + trayrc.top;
 				// Child windows use taskbar-client coordinates.
-				if(!bFullScreen && hWin11UI == NULL)
+				if (ShouldEmbedMonitorInLegacyTaskbar())
 					ntop -= trayrc.top;
 			}
 			ntop += GetMonitorOffsetY();
@@ -5287,11 +5416,9 @@ void AdjustWindowPos()//设置信息窗口位置大小
 				ottop = ntop;
 				//			::InvalidateRect(hTaskBar, NULL, TRUE);
 				//			if (!hWin11UI)
-				if (hWin11UI != NULL && !bFullScreen)
+				if (hWin11UI != NULL && !ShouldHideMonitorForFullscreen())
 					SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth > 0 ? mWidth : 1, h,
 						SWP_NOACTIVATE | SWP_SHOWWINDOW);
-				else if(bFullScreen)
-					SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth > 0 ? mWidth : 1, h, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
 				else
 					MoveWindow(hTaskBar, nleft, ntop, mWidth > 0 ? mWidth : 1, h, TRUE);
 				
@@ -5300,11 +5427,9 @@ void AdjustWindowPos()//设置信息窗口位置大小
 			}
 			//		else if(hWin11UI)
 			//			SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth, h, SWP_NOACTIVATE|SWP_NOREDRAW|SWP_NOSIZE|SWP_NOMOVE|SWP_SHOWWINDOW);
-			if (hWin11UI != NULL && !bFullScreen)
+			if (hWin11UI != NULL && !ShouldHideMonitorForFullscreen())
 				SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth, h,
 					SWP_NOACTIVATE | SWP_SHOWWINDOW);
-			else if(bFullScreen)
-				SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, mWidth, h, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW);
 		}
 		else
 		{
@@ -5320,9 +5445,9 @@ void AdjustWindowPos()//设置信息窗口位置大小
 				ntop = taskrc.top+2;
 			else
 				ntop = taskrc.bottom - mHeight;
-			if (!bFullScreen && hWin11UI == NULL)
+			if (ShouldEmbedMonitorInLegacyTaskbar())
 				ntop -= trayrc.top;
-			int nleft = (hWin11UI != NULL || bFullScreen) ? trayrc.left + 1 : 1;
+			int nleft = ShouldEmbedMonitorInLegacyTaskbar() ? 1 : trayrc.left + 1;
 			nleft += GetMonitorOffsetX();
 			ntop += GetMonitorOffsetY();
 			int w = trayrc.right - trayrc.left - 2;
@@ -5342,10 +5467,7 @@ void AdjustWindowPos()//设置信息窗口位置大小
 				*/
 				ottop = ntop;
 				otleft = nleft;
-				if (bFullScreen)
-					SetWindowPos(hTaskBar, HWND_TOPMOST, nleft, ntop, w, verticalHeight, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_SHOWWINDOW);
-				else
-					MoveWindow(hTaskBar, nleft, ntop, w, verticalHeight, TRUE);
+				MoveWindow(hTaskBar, nleft, ntop, w, verticalHeight, TRUE);
 			}
 		}
 	}
@@ -5353,7 +5475,7 @@ void AdjustWindowPos()//设置信息窗口位置大小
 	// its real size.  Repaint after that resize as well as in OpenTaskBar;
 	// otherwise the first UpdateLayeredWindow call can happen while the HWND is
 	// still 0x0 and the text remains absent until a mouse hover invalidates it.
-	if (TraySave.bMonitor && IsWindow(hTaskBar) && !bFullScreen)
+	if (TraySave.bMonitor && IsWindow(hTaskBar) && !ShouldHideMonitorForFullscreen())
 	{
 		ShowWindow(hTaskBar, SW_SHOWNOACTIVATE);
 		InvalidateRect(hTaskBar, NULL, TRUE);
@@ -7132,6 +7254,18 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 					if (TraySave.dNumValues2[2] != 0 && (TrayData->diskreadbyte / 1024 / 1024 > TraySave.dNumValues2[2] || TrayData->diskwritebyte / 1024 / 1024 > TraySave.dNumValues2[2]))
 						MessageBeep(MB_ICONHAND);
 			}
+			if (ShouldHideMonitorForFullscreen())
+			{
+				if (IsWindow(hTaskBar))
+					ShowWindow(hTaskBar, SW_HIDE);
+				if (IsWindow(hTime))
+					ShowWindow(hTime, SW_HIDE);
+				if (IsWindow(hTaskTips))
+					ShowWindow(hTaskTips, SW_HIDE);
+				if (IsWindow(hPrice))
+					ShowWindow(hPrice, SW_HIDE);
+				break;
+			}
 			POINT pt;
 			GetCursorPos(&pt);
 			RECT brc;
@@ -7937,24 +8071,26 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 	case MSG_APPBAR_MSGID:
 		if (wParam == ABN_FULLSCREENAPP)
 		{
-			if (TraySave.bMonitorTopmost && !TraySave.bMonitorFloat)
+			bFullScreen = lParam != FALSE;
+			if (bFullScreen && !TraySave.bMonitorTopmost)
 			{
-				if (lParam == FALSE)
-				{
-					if (bFullScreen)
-					{
-						DestroyWindow(hTaskBar);
-					}
-				}
-				else
-				{
-					if (!bFullScreen)
-					{
-						DestroyWindow(hTaskBar);
-					}
-				}
+				// Hide immediately when topmost is disabled. AdjustWindowPos() also
+				// has an early return so its timer cannot recreate the overlay while
+				// the fullscreen state is active.
+				if (IsWindow(hTaskBar))
+					ShowWindow(hTaskBar, SW_HIDE);
+				if (IsWindow(hTime))
+					ShowWindow(hTime, SW_HIDE);
+				if (IsWindow(hTaskTips))
+					ShowWindow(hTaskTips, SW_HIDE);
+				if (IsWindow(hPrice))
+					ShowWindow(hPrice, SW_HIDE);
 			}
-			bFullScreen = (BOOL)lParam;
+			else if (!bFullScreen || TraySave.bMonitorTopmost)
+			{
+				RefreshBorderlessFullscreenState();
+				AdjustWindowPos();
+			}
 		}
 		break;
 	case WM_INITDIALOG:
@@ -8628,6 +8764,9 @@ INT_PTR CALLBACK SettingProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		{
 			TraySave.bMonitorTopmost = IsDlgButtonChecked(hDlg, IDC_CHECK_TOPMOST);
 			WriteReg();
+			// Apply the z-order/visibility change immediately. This also lets a
+			// user opt back into a fullscreen overlay without restarting TrayS.
+			AdjustWindowPos();
 		}
 		else if (LOWORD(wParam) == IDC_CHECK_AUTORUN)
 		{

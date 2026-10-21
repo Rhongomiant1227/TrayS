@@ -4,7 +4,7 @@
 #include <string>
 
 #if !defined(_M_X64) && !defined(__x86_64__)
-#error TrayS 1.7.9 and later support x64 builds only.
+#error TrayS 1.7.10 and later support x64 builds only.
 #endif
 
 // This is a separate, user-approved prerequisite installation. Application

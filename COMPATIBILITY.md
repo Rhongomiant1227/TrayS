@@ -105,7 +105,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose-compatibili
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 ```
 
-默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.9_x64\` 与对应的 zip。标准包复制新构建的 `TrayS.exe`、x64 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
+默认会构建 `Release|x64`，并在仓库内生成 `dist\TrayS_1.7.10_x64\` 与对应的 zip。标准包复制新构建的 `TrayS.exe`、x64 LHM 程序集、运行依赖和许可文档；不会复制旧 WinRing0 文件、旧 import library、PawnIO 驱动或个人配置。若确实需要迁移配置，可显式提供 `-ConfigSourceDirectory`，脚本只会读取其中的 `TrayS.dat` 与 `TrayS.xml`。
 
 启用温度监控并检测到 PawnIO 拒绝访问时，TrayS 会自动发起一次授权请求。尝试状态保存在当前用户注册表中，因此拒绝后不会在每次启动重复提示；用户仍可从设置页手动重试。温度采样会先在局部变量中完成，再发布整轮读数，避免 UI 在读取期间显示短暂的 `--`。
 

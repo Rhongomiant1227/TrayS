@@ -55,12 +55,17 @@ static void SetupLayout(bool vertical, bool composition = false, bool fullscreen
 {
     TraySave.bMonitor = FALSE;
     TraySave.bMonitorFloat = FALSE;
+    TraySave.bMonitorTopmost = FALSE;
     TraySave.bSecond = FALSE;
     TraySave.bNear = FALSE;
     TraySave.bMonitorLeft = TRUE;
     bFullScreen = fullscreen;
     hWin11UI = composition ? hTray : NULL;
     MoveWindow(hTray, -1600, -400, vertical ? 40 : 1600, vertical ? 900 : 40, FALSE);
+    // Keep the real desktop foreground window from making the product's
+    // borderless-fullscreen detector suppress these isolated layout fixtures.
+    ShowWindow(hTray, SW_SHOWNA);
+    SetForegroundWindow(hTray);
     MoveWindow(hTaskWnd, vertical ? 0 : 12, vertical ? 20 : 0,
         vertical ? 40 : 1200, vertical ? 750 : 40, FALSE);
     MoveWindow(hTaskListWnd, 0, 0, 600, 40, FALSE);
@@ -216,8 +221,60 @@ static void TestPopupLayout()
     AdjustWindowPos();
     CheckRect(-1582, -397, 38, 100);
     SetupLayout(true, false, true);
+    ShowWindow(hTaskBar, SW_SHOW);
     AdjustWindowPos();
+    Check(!IsWindowVisible(hTaskBar),
+        "Fullscreen monitor overlay remained visible when topmost was disabled");
+	TraySave.bMonitorFloat = TRUE;
+	ShowWindow(hTaskBar, SW_SHOW);
+	AdjustWindowPos();
+	Check(!IsWindowVisible(hTaskBar),
+		"Fullscreen monitor overlay remained visible for a floating custom-position layout");
+	TraySave.bMonitorFloat = FALSE;
+	TraySave.bMonitorTopmost = TRUE;
+	ShowWindow(hTaskBar, SW_SHOW);
+	AdjustWindowPos();
+	Check(IsWindowVisible(hTaskBar),
+		"Topmost preference did not keep the monitor visible during fullscreen");
+	Check((GetWindowLongPtr(hTaskBar, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0,
+		"Topmost preference did not promote the monitor window to the topmost band");
+	TraySave.bMonitorTopmost = FALSE;
+    bFullScreen = FALSE;
+    g_borderlessFullscreen = FALSE;
+    TraySave.bMonitor = TRUE;
+    ShowWindow(hTray, SW_SHOW);
+    hMain = hTray;
+    SetForegroundWindow(hTray);
+    AdjustWindowPos();
+    Check(IsWindowVisible(hTaskBar), "Monitor overlay remained hidden after fullscreen ended");
     CheckRect(-1582, -397, 38, 100);
+	TraySave.bMonitorTopmost = TRUE;
+	AdjustWindowPos();
+	Check((GetWindowLongPtr(hTaskBar, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0,
+		"Topmost preference did not promote the monitor window outside fullscreen");
+	CheckRect(-1582, -397, 38, 100);
+	TraySave.bMonitorTopmost = FALSE;
+	AdjustWindowPos();
+	Check(GetParent(hTaskBar) == hTray,
+		"Disabling topmost did not restore the monitor to the taskbar window");
+	CheckRect(-1582, -397, 38, 100);
+}
+
+static void TestFullscreenWindowBounds()
+{
+	const RECT monitor{ -1920, 0, 0, 1080 };
+	const RECT exactMatch{ -1920, 0, 0, 1080 };
+	const RECT toleratedEdges{ -1918, 2, -2, 1078 };
+	const RECT maximizedWorkArea{ -1920, 0, 0, 1040 };
+	const RECT partialWindow{ -1500, 100, -200, 900 };
+	Check(IsWindowRectCoveringMonitor(exactMatch, monitor),
+		"A window covering the complete monitor was not recognized as fullscreen");
+	Check(IsWindowRectCoveringMonitor(toleratedEdges, monitor),
+		"Fullscreen bounds rejected normal two-pixel edge rounding");
+	Check(!IsWindowRectCoveringMonitor(maximizedWorkArea, monitor),
+		"A maximized work-area window was mistaken for fullscreen");
+	Check(!IsWindowRectCoveringMonitor(partialWindow, monitor),
+		"A partial-monitor window was mistaken for fullscreen");
 }
 
 static float reviewCpuTemperature = 55.125f;
@@ -487,6 +544,7 @@ int main()
         { "Independent calibration sliders", TestSliders },
         { "Legacy taskbar on negative monitor origin", TestLegacyLayout },
         { "Composition and fullscreen vertical offsets", TestPopupLayout },
+		{ "Borderless fullscreen monitor bounds", TestFullscreenWindowBounds },
         { "CPU package priority, ACPI fallback and permission guidance", TestCpuTemperatureSources },
         { "CPU sensor broker keeps the temperature row visible", TestCpuTemperatureLayoutAvailability },
 		{ "CPU sensor broker validates sample errors and version status", TestCpuSensorBrokerSampleAndStatus },
