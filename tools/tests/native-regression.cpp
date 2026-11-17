@@ -277,6 +277,29 @@ static void TestFullscreenWindowBounds()
 		"A partial-monitor window was mistaken for fullscreen");
 }
 
+static void TestStaleAppBarFullscreenRecovery()
+{
+	HWND tracked = reinterpret_cast<HWND>(static_cast<UINT_PTR>(1));
+	HWND other = reinterpret_cast<HWND>(static_cast<UINT_PTR>(2));
+	HMONITOR monitor = reinterpret_cast<HMONITOR>(static_cast<UINT_PTR>(3));
+	HMONITOR otherMonitor = reinterpret_cast<HMONITOR>(static_cast<UINT_PTR>(4));
+	Check(ShouldClearStaleAppBarFullscreen(TRUE, FALSE, tracked, monitor, other,
+		monitor, monitor, FALSE),
+		"A lost AppBar exit was not cleared after focus moved to another window");
+	Check(ShouldClearStaleAppBarFullscreen(TRUE, FALSE, tracked, monitor, tracked,
+		monitor, monitor, TRUE),
+		"A windowed foreground transition did not clear stale AppBar state");
+	Check(ShouldClearStaleAppBarFullscreen(TRUE, FALSE, tracked, otherMonitor, tracked,
+		otherMonitor, monitor, FALSE),
+		"Fullscreen state from another monitor was allowed to hide this overlay");
+	Check(!ShouldClearStaleAppBarFullscreen(TRUE, TRUE, tracked, monitor, other,
+		monitor, monitor, FALSE),
+		"A current borderless fullscreen window was cleared as stale");
+	Check(!ShouldClearStaleAppBarFullscreen(TRUE, FALSE, tracked, monitor, tracked,
+		monitor, monitor, FALSE),
+		"The notified fullscreen owner was cleared while it remained foreground");
+}
+
 static float reviewCpuTemperature = 55.125f;
 static int reviewAcpiSamples = 0;
 
@@ -545,6 +568,7 @@ int main()
         { "Legacy taskbar on negative monitor origin", TestLegacyLayout },
         { "Composition and fullscreen vertical offsets", TestPopupLayout },
 		{ "Borderless fullscreen monitor bounds", TestFullscreenWindowBounds },
+		{ "Stale AppBar fullscreen state recovery", TestStaleAppBarFullscreenRecovery },
         { "CPU package priority, ACPI fallback and permission guidance", TestCpuTemperatureSources },
         { "CPU sensor broker keeps the temperature row visible", TestCpuTemperatureLayoutAvailability },
 		{ "CPU sensor broker validates sample errors and version status", TestCpuSensorBrokerSampleAndStatus },

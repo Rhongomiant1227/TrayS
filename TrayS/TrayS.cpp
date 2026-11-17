@@ -228,6 +228,12 @@ static void TraySRuntimeLogFormat(const wchar_t* format, ...);
 // AppBar notification. This state is refreshed from AdjustWindowPos(), which
 // already runs on the UI timer while the overlay is active.
 static BOOL g_borderlessFullscreen = FALSE;
+// ABN_FULLSCREENAPP carries only a boolean, so remember which foreground root
+// window and monitor caused the notification. This lets the timer discard a
+// stale TRUE if focus has moved to a different, non-fullscreen window and the
+// matching FALSE notification was lost.
+static HWND g_appBarFullscreenRoot = NULL;
+static HMONITOR g_appBarFullscreenMonitor = NULL;
 
 static BOOL IsShellFullscreenExcludedWindow(HWND window)
 {
@@ -286,6 +292,27 @@ static BOOL IsForegroundBorderlessFullscreen()
 	return IsWindowRectCoveringMonitor(foregroundRect, monitorInfo.rcMonitor);
 }
 
+static BOOL ShouldClearStaleAppBarFullscreen(BOOL appBarFullscreen, BOOL borderlessFullscreen,
+	HWND trackedRoot, HMONITOR trackedMonitor, HWND foregroundRoot,
+	HMONITOR foregroundMonitor, HMONITOR monitorOverlay, BOOL foregroundClearlyWindowed)
+{
+	if (!appBarFullscreen || borderlessFullscreen || !trackedRoot || !trackedMonitor || !monitorOverlay)
+		return FALSE;
+	// AppBar state is global, while the monitor overlay belongs to one display.
+	// A fullscreen window on another display must not hide this monitor.
+	if (trackedMonitor != monitorOverlay)
+		return TRUE;
+	// Treat a foreground transition away from the notified fullscreen app as an
+	// implicit exit only when the new foreground is not itself borderless-fullscreen.
+	if (foregroundRoot != trackedRoot)
+		return TRUE;
+	if (foregroundMonitor && foregroundMonitor != trackedMonitor)
+		return TRUE;
+	if (foregroundClearlyWindowed)
+		return TRUE;
+	return FALSE;
+}
+
 static BOOL ShouldHideMonitorForFullscreen()
 {
 	// Query the foreground bounds as part of the guard as well as on the normal
@@ -311,6 +338,33 @@ static void RefreshBorderlessFullscreenState()
 	{
 		g_borderlessFullscreen = detected;
 		TraySRuntimeLogFormat(L"fullscreen borderless=%d appbar=%d", detected, bFullScreen);
+	}
+	if (bFullScreen && !detected)
+	{
+		HWND foreground = GetForegroundWindow();
+		HWND foregroundRoot = IsWindow(foreground) ? GetAncestor(foreground, GA_ROOTOWNER) : NULL;
+		HMONITOR foregroundMonitor = IsWindow(foreground) ?
+			MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST) : NULL;
+		BOOL foregroundClearlyWindowed = !IsWindow(foreground) ||
+			!IsWindowVisible(foreground) || IsIconic(foreground);
+		if (!foregroundClearlyWindowed)
+		{
+			LONG_PTR style = GetWindowLongPtr(foreground, GWL_STYLE);
+			foregroundClearlyWindowed = (style & (WS_CAPTION | WS_THICKFRAME)) != 0;
+		}
+		HWND monitorWindow = IsWindow(hTaskBar) ? hTaskBar : hTray;
+		HMONITOR monitorOverlay = IsWindow(monitorWindow) ?
+			MonitorFromWindow(monitorWindow, MONITOR_DEFAULTTONEAREST) : NULL;
+		if (ShouldClearStaleAppBarFullscreen(bFullScreen, detected,
+			g_appBarFullscreenRoot, g_appBarFullscreenMonitor, foregroundRoot,
+			foregroundMonitor, monitorOverlay, foregroundClearlyWindowed))
+		{
+			TraySRuntimeLogFormat(L"fullscreen appbar stale-reset root=%p foreground=%p monitor=%p target=%p",
+				g_appBarFullscreenRoot, foregroundRoot, g_appBarFullscreenMonitor, monitorOverlay);
+			bFullScreen = FALSE;
+			g_appBarFullscreenRoot = NULL;
+			g_appBarFullscreenMonitor = NULL;
+		}
 	}
 }
 
@@ -581,7 +635,11 @@ static void UpdateMonitorOffsetControls(HWND hDlg)
 
 static BOOL IsWin11ArgbTaskBar()
 {
-	return hWin11UI != NULL && !TraySave.bMonitorFloat && !ShouldHideMonitorForFullscreen();
+	// The rendering backend is a property of the current Shell surface, not of
+	// whether the monitor is temporarily hidden behind a fullscreen app.  Tying
+	// this to ShouldHideMonitorForFullscreen made background refreshes switch a
+	// Win11 HWND between per-pixel ARGB and color-key modes while it was hidden.
+	return hWin11UI != NULL && !TraySave.bMonitorFloat;
 }
 
 // Keep all DLL loads inside the directories we explicitly trust. The
@@ -1709,7 +1767,7 @@ static void ConfigureTaskBarWindowMode()
 		// by the window manager as well as by the next positioning pass.
 		exStyle |= WS_EX_TOPMOST;
 	}
-	if (!TraySave.bMonitorFloat && !bFullScreen)
+	if (!TraySave.bMonitorFloat && (!bFullScreen || IsWin11ArgbTaskBar()))
 		exStyle |= WS_EX_LAYERED;
 	if (exStyle != oldExStyle)
 		SetWindowLongPtr(hTaskBar, GWL_EXSTYLE, exStyle);
@@ -1780,6 +1838,7 @@ void OpenTimeDlg()
 
 void OpenTaskBar()
 {
+	RefreshBorderlessFullscreenState();
 	if (ShouldHideMonitorForFullscreen())
 		return;
 	if (IsWindow(hTaskBar) == FALSE)
@@ -1789,7 +1848,9 @@ void OpenTaskBar()
 		hTaskBar = ::CreateDialog(hInst, MAKEINTRESOURCE(IDD_TASKBAR), NULL, (DLGPROC)TaskBarProc);
 		if (hTaskBar)
 		{			
-			if (TraySave.bMonitorFloat||bFullScreen||(rovi.dwBuildNumber<=25000&&TraySave.bTrayStyle)||(rovi.dwMajorVersion==6&&rovi.dwMinorVersion==1))
+			if (TraySave.bMonitorFloat || (bFullScreen && !IsWin11ArgbTaskBar()) ||
+				(rovi.dwBuildNumber <= 25000 && TraySave.bTrayStyle) ||
+				(rovi.dwMajorVersion == 6 && rovi.dwMinorVersion == 1))
 			{
 				if (TraySave.cMonitorColor[0] == RGB(0,0,1) || TraySave.cMonitorColor[0] == 0)
 				{
@@ -1815,7 +1876,7 @@ void OpenTaskBar()
 //				else
 //					SetParent(hTaskBar, GetForegroundWindow());
 			}
-			if (hWin11UI != NULL && !TraySave.bMonitorFloat && !bFullScreen)
+			if (IsWin11ArgbTaskBar())
 			{
 				// Do not use the legacy shadow/fuse background on the Win11
 				// composition overlay. It reads visually as a black rectangle
@@ -1839,7 +1900,7 @@ void OpenTaskBar()
 			// here so the monitor is visible before the pointer enters its bounds.
 			InvalidateRect(hTaskBar, NULL, TRUE);
 			UpdateWindow(hTaskBar);
-			if (hWin11UI != NULL && !TraySave.bMonitorFloat && !bFullScreen)
+			if (IsWin11ArgbTaskBar() && !ShouldHideMonitorForFullscreen())
 				SetWindowPos(hTaskBar, HWND_TOPMOST, 0, 0, 0, 0,
 					SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
 			if (TraySave.bMonitorTransparent&&TraySave.bMonitorFloat)
@@ -5153,6 +5214,8 @@ void AdjustWindowPos()//设置信息窗口位置大小
 		DestroyWindow(hTime);
 		DestroyWindow(hTaskBar);
 		bFullScreen = FALSE;
+		g_appBarFullscreenRoot = NULL;
+		g_appBarFullscreenMonitor = NULL;
 		GetShellAllWnd();
 		APPBARDATA abd{};
 		abd.cbSize = sizeof(abd);
@@ -5366,7 +5429,7 @@ void AdjustWindowPos()//设置信息窗口位置大小
 			nleft += GetMonitorOffsetX();
 			int h = wHeight * 2;
 			int ntop;
-			if (hWin11UI != NULL && !bFullScreen)
+			if (IsWin11ArgbTaskBar())
 			{
 				// Composition popups use screen coordinates.  Anchor the bottom
 				// edge to the taskbar bottom so both rows remain inside the bar;
@@ -6826,6 +6889,8 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 		break;
 	case WM_MOUSEHOVER:
 	{
+		if (!IsWindowVisible(hTaskBar) || ShouldHideMonitorForFullscreen())
+			break;
 		POINT pt;
 		RECT rc;
 		GetCursorPos(&pt);
@@ -7266,6 +7331,8 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 					ShowWindow(hPrice, SW_HIDE);
 				break;
 			}
+			if (!IsWindowVisible(hTaskBar))
+				break;
 			POINT pt;
 			GetCursorPos(&pt);
 			RECT brc;
@@ -7274,7 +7341,7 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			{
 				if (rovi.dwBuildNumber >= 22000 && !TraySave.bMonitorFloat)//&&TraySave.cMonitorColor[0]==RGB(0,0,1))
 				{
-					if (!bFullScreen)
+					if (!ShouldHideMonitorForFullscreen())
 					{
 
 						if (!KEYDOWN(VK_LBUTTON) && !IsWindow(hTaskTips) && !IsWindow(hPrice))
@@ -7321,6 +7388,7 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			const int surfaceWidth = rc.right - rc.left;
 			const int surfaceHeight = rc.bottom - rc.top;
 			BOOL argbSurface = IsWin11ArgbTaskBar();
+			BOOL preserveExistingArgbSurface = FALSE;
 			BYTE* argbBits = NULL;
 			HBITMAP hMemBmp = NULL;
 			if (argbSurface)
@@ -7365,7 +7433,13 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 				}
 			}
 			if (!argbSurface && IsWin11ArgbTaskBar())
-				ApplyTaskBarColorKey(RGB(0, 0, 1));
+			{
+				// A transient DIB allocation/initialization failure must not switch a
+				// composition popup to color-key mode. That permanently invalidates
+				// the next UpdateLayeredWindow call and can leave a black rectangle.
+				// Keep the last submitted ARGB frame until the next successful pass.
+				preserveExistingArgbSurface = TRUE;
+			}
 			//		if (TraySave.cMonitorColor[0] != 0)
 			if (!argbSurface)
 			{
@@ -7377,7 +7451,6 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 				{
 					const COLORREF transparentKey = RGB(0, 0, 1);
 					oPixelColor = transparentKey;
-					ApplyTaskBarColorKey(transparentKey);
 					hb = CreateSolidBrush(transparentKey);
 				}
 				else if (TraySave.cMonitorColor[0] != RGB(0, 0, 1)&& TraySave.cMonitorColor[0] != RGB(0, 0, 2))
@@ -7393,15 +7466,13 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 					if (hWin11UI != NULL && !TraySave.bMonitorFloat)
 					{
 						// XAML/composition taskbars do not provide a stable GDI pixel
-						// to sample.  Sampling Explorer here can return black while the
-						// layered color key is still the old value, leaving an opaque
-						// rectangle behind the text.  Paint and key the same reserved
-						// color on every frame so DWM removes it consistently.
+						// to sample.  Use the reserved transparent key only as the
+						// temporary fallback bitmap color; the ARGB path remains the
+						// authoritative submitted surface.
 						const COLORREF transparentKey = RGB(0, 0, 1);
 						if (oPixelColor != transparentKey)
 						{
 							oPixelColor = transparentKey;
-							ApplyTaskBarColorKey(transparentKey);
 						}
 						hb = CreateSolidBrush(transparentKey);
 					}
@@ -7956,6 +8027,9 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 			DWORD imageSize = 0;
 			if (argbBits && ComputeDibImageSize(surfaceWidth, surfaceHeight, &imageSize))
 			{
+				// GDI may batch DrawText operations even for a DIB section. Flush
+				// before reading the shared pixel buffer and submitting it to DWM.
+				GdiFlush();
 				for (DWORD offset = 0; offset + 3 < imageSize; offset += 4)
 				{
 					if (argbBits[offset + 3] != 0)
@@ -7986,7 +8060,7 @@ INT_PTR CALLBACK TaskBarProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 					IsWindowVisible(hDlg));
 			EndArgbTextRender();
 		}
-		else
+		else if (!preserveExistingArgbSurface)
 			BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, mdc, 0, 0, SRCCOPY);
 		if (oldBmp && oldBmp != (HBITMAP)HGDI_ERROR)
 			SelectObject(mdc, oldBmp);
@@ -8071,7 +8145,30 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 	case MSG_APPBAR_MSGID:
 		if (wParam == ABN_FULLSCREENAPP)
 		{
-			bFullScreen = lParam != FALSE;
+			BOOL appBarFullscreen = lParam != FALSE;
+			HWND foreground = GetForegroundWindow();
+			HWND foregroundRoot = IsWindow(foreground) ?
+				GetAncestor(foreground, GA_ROOTOWNER) : NULL;
+			HMONITOR foregroundMonitor = IsWindow(foreground) ?
+				MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST) : NULL;
+			HWND monitorWindow = IsWindow(hTaskBar) ? hTaskBar : hTray;
+			HMONITOR monitorOverlay = IsWindow(monitorWindow) ?
+				MonitorFromWindow(monitorWindow, MONITOR_DEFAULTTONEAREST) : NULL;
+			// AppBar fullscreen state is process-global. Apply it only to the
+			// monitor that owns this overlay; the geometry detector independently
+			// handles borderless fullscreen on this same display.
+			bFullScreen = appBarFullscreen && foregroundRoot && foregroundMonitor &&
+				(!monitorOverlay || foregroundMonitor == monitorOverlay);
+			if (bFullScreen)
+			{
+				g_appBarFullscreenRoot = foregroundRoot;
+				g_appBarFullscreenMonitor = foregroundMonitor;
+			}
+			else
+			{
+				g_appBarFullscreenRoot = NULL;
+				g_appBarFullscreenMonitor = NULL;
+			}
 			if (bFullScreen && !TraySave.bMonitorTopmost)
 			{
 				// Hide immediately when topmost is disabled. AdjustWindowPos() also
@@ -8345,7 +8442,8 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 					hSecondaryTray = FindWindowEx(NULL, hSecondaryTray, szSecondaryTray, NULL);
 				}
 			}
-			if (TraySave.bMonitor && IsWin11ArgbTaskBar() && IsWindow(hTaskBar))
+			if (TraySave.bMonitor && IsWin11ArgbTaskBar() &&
+				!ShouldHideMonitorForFullscreen() && IsWindow(hTaskBar))
 			{
 				// Changing the Explorer taskbar's layered/composition style can
 				// promote Shell_TrayWnd above our popup.  Restore the monitor's
@@ -8391,7 +8489,8 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		}
 		return TRUE;
 	case WM_APP_TRAYS_MONITOR_REFRESH:
-		if (TraySave.bMonitor && IsWindow(hTaskBar))
+		if (TraySave.bMonitor && IsWindow(hTaskBar) &&
+			!ShouldHideMonitorForFullscreen() && IsWindowVisible(hTaskBar))
 		{
 			InvalidateRect(hTaskBar, NULL, TRUE);
 			UpdateWindow(hTaskBar);
