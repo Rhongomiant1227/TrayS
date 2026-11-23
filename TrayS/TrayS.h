@@ -384,7 +384,7 @@ SRWLOCK g_networkLock = SRWLOCK_INIT;
 HMODULE hPDH = NULL;
 ////////////////////////////////////////////////查找隐藏试最大化窗口
 HMODULE hDwmapi=NULL;
-typedef BOOL(WINAPI* pfnDwmGetWindowAttribute)(HWND hwnd, DWORD dwAttribute, PVOID pvAttribute, DWORD cbAttribute);
+typedef HRESULT(WINAPI* pfnDwmGetWindowAttribute)(HWND hwnd, DWORD dwAttribute, PVOID pvAttribute, DWORD cbAttribute);
 pfnDwmGetWindowAttribute pDwmGetWindowAttribute;
 
 ////////////////////////////////////////////////获取网速

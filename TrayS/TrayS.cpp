@@ -227,7 +227,7 @@ static void TraySRuntimeLogFormat(const wchar_t* format, ...);
 // detector so the monitor overlay is hidden even when Explorer does not send the
 // AppBar notification. This state is refreshed from AdjustWindowPos(), which
 // already runs on the UI timer while the overlay is active.
-static BOOL g_borderlessFullscreen = FALSE;
+static HWND g_borderlessFullscreenWindow = NULL;
 // ABN_FULLSCREENAPP carries only a boolean, so remember which foreground root
 // window and monitor caused the notification. This lets the timer discard a
 // stale TRUE if focus has moved to a different, non-fullscreen window and the
@@ -271,25 +271,44 @@ static BOOL IsWindowRectCoveringMonitor(const RECT& windowRect, const RECT& moni
 		windowRect.bottom >= monitorRect.bottom - tolerance;
 }
 
-static BOOL IsForegroundBorderlessFullscreen()
+static HMONITOR GetMonitorOverlayDisplay()
 {
+	HWND window = IsWindow(hTaskBar) ? hTaskBar : hTray;
+	return IsWindow(window) ? MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) : NULL;
+}
+
+static HWND FindBorderlessFullscreenWindow()
+{
+	HMONITOR overlayDisplay = GetMonitorOverlayDisplay();
+	if (!overlayDisplay)
+		return NULL;
 	HWND foreground = GetForegroundWindow();
-	if (IsShellFullscreenExcludedWindow(foreground) || !IsWindowVisible(foreground) || IsIconic(foreground))
-		return FALSE;
-	LONG_PTR foregroundStyle = GetWindowLongPtr(foreground, GWL_STYLE);
-	if (IsZoomed(foreground) && (foregroundStyle & (WS_CAPTION | WS_THICKFRAME)))
-		return FALSE;
-	HMONITOR foregroundMonitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
-	HMONITOR taskbarMonitor = IsWindow(hTaskBar) ?
-		MonitorFromWindow(hTaskBar, MONITOR_DEFAULTTONEAREST) : foregroundMonitor;
-	if (!foregroundMonitor || !taskbarMonitor || foregroundMonitor != taskbarMonitor)
-		return FALSE;
+	HMONITOR focusDisplay = IsWindow(foreground) ?
+		MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST) : NULL;
+
+	// Focus can move to a different display while the last fullscreen window
+	// still covers ours. Windows can also report no foreground during the switch.
+	const bool focusOnOverlayDisplay = focusDisplay == overlayDisplay;
+	HWND candidate = focusOnOverlayDisplay ? foreground : g_borderlessFullscreenWindow;
+	if (IsShellFullscreenExcludedWindow(candidate) || !IsWindowVisible(candidate) || IsIconic(candidate))
+		return NULL;
+	LONG_PTR style = GetWindowLongPtr(candidate, GWL_STYLE);
+	if (IsZoomed(candidate) && (style & (WS_CAPTION | WS_THICKFRAME)))
+		return NULL;
 	MONITORINFO monitorInfo{};
 	monitorInfo.cbSize = sizeof(monitorInfo);
-	RECT foregroundRect{};
-	if (!GetMonitorInfoW(foregroundMonitor, &monitorInfo) || !GetWindowRect(foreground, &foregroundRect))
-		return FALSE;
-	return IsWindowRectCoveringMonitor(foregroundRect, monitorInfo.rcMonitor);
+	RECT bounds{};
+	if (!GetMonitorInfoW(overlayDisplay, &monitorInfo) || !GetWindowRect(candidate, &bounds) ||
+		!IsWindowRectCoveringMonitor(bounds, monitorInfo.rcMonitor))
+		return NULL;
+	if (!focusOnOverlayDisplay && pDwmGetWindowAttribute)
+	{
+		// A window on an inactive virtual desktop can still have WS_VISIBLE.
+		DWORD cloaked = 0;
+		if (SUCCEEDED(pDwmGetWindowAttribute(candidate, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+			return NULL;
+	}
+	return candidate;
 }
 
 static BOOL ShouldClearStaleAppBarFullscreen(BOOL appBarFullscreen, BOOL borderlessFullscreen,
@@ -322,22 +341,22 @@ static BOOL ShouldHideMonitorForFullscreen()
 	// fullscreen application. Floating/custom positioning is independent of this
 	// choice and must never disable the normal fullscreen hiding rule.
 	return !TraySave.bMonitorTopmost &&
-		(bFullScreen || g_borderlessFullscreen || IsForegroundBorderlessFullscreen());
+		(bFullScreen || g_borderlessFullscreenWindow || FindBorderlessFullscreenWindow());
 }
 
 static BOOL ShouldEmbedMonitorInLegacyTaskbar()
 {
 	return !TraySave.bMonitorFloat && !TraySave.bMonitorTopmost &&
-		!bFullScreen && !g_borderlessFullscreen && hWin11UI == NULL;
+		!bFullScreen && !g_borderlessFullscreenWindow && hWin11UI == NULL;
 }
 
 static void RefreshBorderlessFullscreenState()
 {
-	BOOL detected = IsForegroundBorderlessFullscreen();
-	if (detected != g_borderlessFullscreen)
+	HWND detected = FindBorderlessFullscreenWindow();
+	if (detected != g_borderlessFullscreenWindow)
 	{
-		g_borderlessFullscreen = detected;
-		TraySRuntimeLogFormat(L"fullscreen borderless=%d appbar=%d", detected, bFullScreen);
+		g_borderlessFullscreenWindow = detected;
+		TraySRuntimeLogFormat(L"fullscreen borderless=%d appbar=%d", detected != NULL, bFullScreen);
 	}
 	if (bFullScreen && !detected)
 	{
@@ -352,10 +371,8 @@ static void RefreshBorderlessFullscreenState()
 			LONG_PTR style = GetWindowLongPtr(foreground, GWL_STYLE);
 			foregroundClearlyWindowed = (style & (WS_CAPTION | WS_THICKFRAME)) != 0;
 		}
-		HWND monitorWindow = IsWindow(hTaskBar) ? hTaskBar : hTray;
-		HMONITOR monitorOverlay = IsWindow(monitorWindow) ?
-			MonitorFromWindow(monitorWindow, MONITOR_DEFAULTTONEAREST) : NULL;
-		if (ShouldClearStaleAppBarFullscreen(bFullScreen, detected,
+		HMONITOR monitorOverlay = GetMonitorOverlayDisplay();
+		if (ShouldClearStaleAppBarFullscreen(bFullScreen, detected != NULL,
 			g_appBarFullscreenRoot, g_appBarFullscreenMonitor, foregroundRoot,
 			foregroundMonitor, monitorOverlay, foregroundClearlyWindowed))
 		{
@@ -8151,9 +8168,7 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 				GetAncestor(foreground, GA_ROOTOWNER) : NULL;
 			HMONITOR foregroundMonitor = IsWindow(foreground) ?
 				MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST) : NULL;
-			HWND monitorWindow = IsWindow(hTaskBar) ? hTaskBar : hTray;
-			HMONITOR monitorOverlay = IsWindow(monitorWindow) ?
-				MonitorFromWindow(monitorWindow, MONITOR_DEFAULTTONEAREST) : NULL;
+			HMONITOR monitorOverlay = GetMonitorOverlayDisplay();
 			// AppBar fullscreen state is process-global. Apply it only to the
 			// monitor that owns this overlay; the geometry detector independently
 			// handles borderless fullscreen on this same display.
@@ -8171,6 +8186,8 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 			if (bFullScreen && !TraySave.bMonitorTopmost)
 			{
+				// Remember the window even if focus moves before the positioning timer.
+				g_borderlessFullscreenWindow = FindBorderlessFullscreenWindow();
 				// Hide immediately when topmost is disabled. AdjustWindowPos() also
 				// has an early return so its timer cannot recreate the overlay while
 				// the fullscreen state is active.
@@ -8183,11 +8200,8 @@ INT_PTR CALLBACK MainProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 				if (IsWindow(hPrice))
 					ShowWindow(hPrice, SW_HIDE);
 			}
-			else if (!bFullScreen || TraySave.bMonitorTopmost)
-			{
-				RefreshBorderlessFullscreenState();
+			else
 				AdjustWindowPos();
-			}
 		}
 		break;
 	case WM_INITDIALOG:

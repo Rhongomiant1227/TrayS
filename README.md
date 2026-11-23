@@ -22,11 +22,13 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 
 本仓库来自上游项目 [cgbsmy/TrayS](https://github.com/cgbsmy/TrayS) 的 fork，由 [Rhongomiant1227/TrayS](https://github.com/Rhongomiant1227/TrayS) 继续维护。上游版本已经比较老，面对新一代 AMD 平台、混合显卡、Windows 11 Shell 和现代安全软件时，容易出现兼容性或告警问题；本 fork 的目标是保留 TrayS 的轻巧体验，同时把高风险、过时和容易误伤系统的路径收紧。
 
-当前维护版本：**TrayS 1.7.11**。从 1.7.9 起只维护和发布 **x64**，不再提供 32 位 Windows/x86 构建。
+当前维护版本：**TrayS 1.7.12**。从 1.7.9 起只维护和发布 **x64**，不再提供 32 位 Windows/x86 构建。
+
+1.7.12 修复双屏环境下焦点切到另一块屏幕后，监控条重新覆盖原屏全屏窗口的问题。原窗口退出全屏后，监控条会自动恢复。
 
 1.7.11 延续缺少 PawnIO 时的应用内下载、固定 SHA-256 和 Authenticode 校验，并修复失焦/全屏切换后监控条偶发消失、ARGB 透明表面切换和悬停提示误弹出问题；正式构建与发布继续收敛为 x64。
 
-旧版 1.5/1.6/1.7.0–1.7.10 不建议继续下载或使用。x64 Windows 用户请安装 1.7.11；历史 x86 Release 仅作为存档，不再维护，也不会有新的 32 位包。
+旧版 1.5/1.6/1.7.0–1.7.11 不建议继续下载或使用。x64 Windows 用户请安装 1.7.12；历史 x86 Release 仅作为存档，不再维护，也不会有新的 32 位包。
 
 ## ✨ 现在有什么不一样？
 
@@ -73,7 +75,7 @@ TrayS 是一个运行在 Windows 任务栏附近的轻量监控工具，可以�
 更新流程会从固定的 GitHub HTTPS API 查询最新 Release，严格选择当前版本和架构对应的资产，例如：
 
 ```text
-TrayS_1.7.11_x64.zip
+TrayS_1.7.12_x64.zip
 ```
 
 下载包在安装前会检查 Release digest、本地 SHA-256、版本资源和 PE 架构。程序会先退出，再由临时 helper 完成替换并重启；失败时恢复旧 EXE 和所有已替换的监控运行库。更新过程不打开浏览器，也不调用第三方下载器。
@@ -90,7 +92,7 @@ TrayS.dat             # 原有设置，保持旧结构兼容
 TrayS.update.dat      # 更新开关，默认不存在即视为开启
 ```
 
-如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`。1.7.11 包含 x64 LHM 0.9.6 用户态程序集及依赖，不包含 PawnIO 或其他 `.sys` 驱动；缺少 PawnIO 时，启用温度监控会提供“下载安装”，从官方 GitHub 下载固定版本，校验 SHA-256 和 Windows 签名后再请求一次 UAC。
+如果安全软件提示风险，请先核对 Release 的 SHA-256 和包内 `SHA256SUMS.txt`。1.7.12 包含 x64 LHM 0.9.6 用户态程序集及依赖，不包含 PawnIO 或其他 `.sys` 驱动；缺少 PawnIO 时，启用温度监控会提供“下载安装”，从官方 GitHub 下载固定版本，校验 SHA-256 和 Windows 签名后再请求一次 UAC。
 
 ## 🧰 从源码构建
 
@@ -127,8 +129,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 # x64
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\package-release.ps1 `
-  -Platform x64 -Configuration Release
-  -PackageName TrayS_1.7.11_x64 -Force
+  -Platform x64 -Configuration Release `
+  -PackageName TrayS_1.7.12_x64 -Force
 
 ```
 
@@ -152,7 +154,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 | 任务栏 UI | Win11 Shell 能力检测、DPI 和 Explorer 重启边界收紧；取消高成本逐像素移动。 |
 | 线程退出 | 正常等待工作线程，避免用 `TerminateThread` 留下锁或第三方 DLL 状态。 |
 | 应用更新 | 后台检查、精确资产名、SHA-256、版本/架构校验、失败回滚和重启。 |
-| 发布 | 1.7.11 继续只发布 x64，沿用 `TrayS_<版本>_<架构>.zip` 命名，包内附校验清单和兼容性说明。 |
+| 发布 | 1.7.12 继续只发布 x64，沿用 `TrayS_<版本>_<架构>.zip` 命名，包内附校验清单和兼容性说明。 |
 
 更完整的边界、已知限制和回归表请看 [COMPATIBILITY.md](COMPATIBILITY.md)。后续维护 agent 的上下文、禁止事项和交接入口在 [AGENT_HANDOFF.md](AGENT_HANDOFF.md)。
 

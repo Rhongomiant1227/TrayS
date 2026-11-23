@@ -22,13 +22,85 @@ static BOOL WINAPI ReviewSetWindowPos(HWND window, HWND after, int x, int y, int
     // Keep test windows hidden even when the product asks to show its overlay.
     return SetWindowPos(window, after, x, y, width, height, flags & ~SWP_SHOWWINDOW);
 }
+
+// Two simulated displays, with real HWNDs for the overlay and app geometry.
+// The two app windows stay physically hidden and never steal desktop focus.
+static const HMONITOR reviewLeftDisplay = reinterpret_cast<HMONITOR>(static_cast<UINT_PTR>(1));
+static const HMONITOR reviewRightDisplay = reinterpret_cast<HMONITOR>(static_cast<UINT_PTR>(2));
+static HWND reviewFullscreenApp = NULL;
+static HWND reviewWindowedApp = NULL;
+static HWND reviewForeground = NULL;
+static BOOL reviewFullscreenAppVisible = TRUE;
+static DWORD reviewFullscreenAppCloaked = 0;
+
+static HRESULT WINAPI ReviewDwmGetWindowAttribute(HWND window, DWORD attribute, PVOID data, DWORD size)
+{
+    if (window != reviewFullscreenApp || attribute != DWMWA_CLOAKED || size != sizeof(DWORD))
+        return E_INVALIDARG;
+    *static_cast<DWORD*>(data) = reviewFullscreenAppCloaked;
+    return S_OK;
+}
+
+static HWND WINAPI ReviewGetForegroundWindow()
+{
+    return reviewWindowedApp ? reviewForeground : GetForegroundWindow();
+}
+
+static HMONITOR WINAPI ReviewMonitorFromWindow(HWND window, DWORD flags)
+{
+    RECT bounds{};
+    if (reviewWindowedApp && GetWindowRect(window, &bounds))
+        return bounds.left < 0 ? reviewLeftDisplay : reviewRightDisplay;
+    return MonitorFromWindow(window, flags);
+}
+
+static BOOL WINAPI ReviewGetMonitorInfoW(HMONITOR display, LPMONITORINFO info)
+{
+    if (reviewWindowedApp && (display == reviewLeftDisplay || display == reviewRightDisplay))
+    {
+        const LONG left = display == reviewLeftDisplay ? -1600 : 0;
+        info->rcMonitor = { left, -400, left + 1600, 500 };
+        info->rcWork = info->rcMonitor;
+        info->rcWork.bottom -= 40;
+        return TRUE;
+    }
+    return GetMonitorInfoW(display, info);
+}
+
+static BOOL WINAPI ReviewIsWindowVisible(HWND window)
+{
+    if (window && window == reviewFullscreenApp)
+        return reviewFullscreenAppVisible;
+    if (window && window == reviewWindowedApp)
+        return TRUE;
+    return IsWindowVisible(window);
+}
+
+static DWORD WINAPI ReviewGetWindowThreadProcessId(HWND window, LPDWORD processId)
+{
+    DWORD threadId = GetWindowThreadProcessId(window, processId);
+    if (threadId && processId && (window == reviewFullscreenApp || window == reviewWindowedApp))
+        *processId = GetCurrentProcessId() + 1;
+    return threadId;
+}
+
 #define GetKeyState ReviewGetKeyState
 #define GetCursorPos ReviewGetCursorPos
 #define SetWindowPos ReviewSetWindowPos
+#define GetForegroundWindow ReviewGetForegroundWindow
+#define MonitorFromWindow ReviewMonitorFromWindow
+#define GetMonitorInfoW ReviewGetMonitorInfoW
+#define IsWindowVisible ReviewIsWindowVisible
+#define GetWindowThreadProcessId ReviewGetWindowThreadProcessId
 #include "TrayS.cpp"
 #undef GetKeyState
 #undef GetCursorPos
 #undef SetWindowPos
+#undef GetForegroundWindow
+#undef MonitorFromWindow
+#undef GetMonitorInfoW
+#undef IsWindowVisible
+#undef GetWindowThreadProcessId
 
 static void Check(bool condition, const char* message)
 {
@@ -240,7 +312,7 @@ static void TestPopupLayout()
 		"Topmost preference did not promote the monitor window to the topmost band");
 	TraySave.bMonitorTopmost = FALSE;
     bFullScreen = FALSE;
-    g_borderlessFullscreen = FALSE;
+    g_borderlessFullscreenWindow = NULL;
     TraySave.bMonitor = TRUE;
     ShowWindow(hTray, SW_SHOW);
     hMain = hTray;
@@ -298,6 +370,96 @@ static void TestStaleAppBarFullscreenRecovery()
 	Check(!ShouldClearStaleAppBarFullscreen(TRUE, FALSE, tracked, monitor, tracked,
 		monitor, monitor, FALSE),
 		"The notified fullscreen owner was cleared while it remained foreground");
+}
+
+static void TestCrossMonitorFullscreen()
+{
+    SetupLayout(false, true);
+    TraySave.bMonitor = TRUE;
+    AdjustWindowPos();
+    Check(IsWindowVisible(hTaskBar), "Overlay was not initially visible");
+
+    struct ResetFixture
+    {
+        pfnDwmGetWindowAttribute savedDwmGetWindowAttribute;
+
+        ~ResetFixture()
+        {
+            DestroyWindow(reviewFullscreenApp);
+            DestroyWindow(reviewWindowedApp);
+            reviewFullscreenApp = reviewWindowedApp = reviewForeground = NULL;
+            reviewFullscreenAppVisible = TRUE;
+            reviewFullscreenAppCloaked = 0;
+            pDwmGetWindowAttribute = savedDwmGetWindowAttribute;
+            bFullScreen = FALSE;
+            g_borderlessFullscreenWindow = NULL;
+            g_appBarFullscreenRoot = NULL;
+            g_appBarFullscreenMonitor = NULL;
+            TraySave.bMonitorTopmost = FALSE;
+        }
+    } reset{ pDwmGetWindowAttribute };
+    pDwmGetWindowAttribute = ReviewDwmGetWindowAttribute;
+    reviewFullscreenApp = MakeWindow(WS_POPUP);
+    reviewWindowedApp = MakeWindow(WS_OVERLAPPEDWINDOW);
+    MoveWindow(reviewFullscreenApp, -1600, -400, 1600, 900, FALSE);
+    MoveWindow(reviewWindowedApp, 100, -200, 600, 400, FALSE);
+
+    reviewForeground = reviewFullscreenApp;
+    AdjustWindowPos();
+    Check(!IsWindowVisible(hTaskBar), "Fullscreen on the overlay display did not hide it");
+    reviewForeground = reviewWindowedApp;
+    AdjustWindowPos();
+    Check(!IsWindowVisible(hTaskBar),
+        "Focusing the other display showed the overlay over the original fullscreen app");
+
+    reviewForeground = NULL;
+    MainProc(hMain, MSG_APPBAR_MSGID, ABN_FULLSCREENAPP, FALSE);
+    Check(!IsWindowVisible(hTaskBar), "A shell exit notification without foreground lost the fullscreen window");
+    reviewForeground = reviewWindowedApp;
+    AdjustWindowPos();
+    Check(!IsWindowVisible(hTaskBar), "The still-fullscreen window was lost after the focus gap");
+    TraySave.bMonitorTopmost = TRUE;
+    AdjustWindowPos();
+    Check(IsWindowVisible(hTaskBar), "Explicit topmost stopped working with focus on the other display");
+    TraySave.bMonitorTopmost = FALSE;
+    AdjustWindowPos();
+    Check(!IsWindowVisible(hTaskBar), "Disabling topmost did not hide the overlay again");
+
+    MoveWindow(reviewFullscreenApp, -1400, -300, 1000, 500, FALSE);
+    AdjustWindowPos();
+    Check(IsWindowVisible(hTaskBar), "Leaving fullscreen while unfocused did not restore the overlay");
+
+    MoveWindow(reviewFullscreenApp, -1600, -400, 1600, 900, FALSE);
+    reviewForeground = reviewFullscreenApp;
+    MainProc(hMain, MSG_APPBAR_MSGID, ABN_FULLSCREENAPP, TRUE);
+    Check(!IsWindowVisible(hTaskBar), "A fullscreen entry notification did not hide the overlay");
+    reviewForeground = reviewWindowedApp;
+    AdjustWindowPos();
+    Check(!IsWindowVisible(hTaskBar), "Cross-display focus dropped fullscreen before the timer had observed it");
+    reviewFullscreenAppVisible = FALSE;
+    AdjustWindowPos();
+    Check(IsWindowVisible(hTaskBar), "Hiding the unfocused fullscreen window did not restore the overlay");
+
+    reviewFullscreenAppVisible = TRUE;
+    reviewForeground = reviewFullscreenApp;
+    AdjustWindowPos();
+    reviewForeground = reviewWindowedApp;
+    reviewFullscreenAppCloaked = DWM_CLOAKED_SHELL;
+    AdjustWindowPos();
+    Check(IsWindowVisible(hTaskBar), "A cloaked window on an inactive desktop kept the overlay hidden");
+
+    reviewFullscreenAppCloaked = 0;
+    reviewForeground = reviewFullscreenApp;
+    AdjustWindowPos();
+    MoveWindow(reviewWindowedApp, -1400, -300, 1000, 500, FALSE);
+    reviewForeground = reviewWindowedApp;
+    AdjustWindowPos();
+    Check(IsWindowVisible(hTaskBar), "Alt-Tab on the same display kept a stale fullscreen hide");
+
+    MoveWindow(reviewFullscreenApp, 0, -400, 1600, 900, FALSE);
+    reviewForeground = reviewFullscreenApp;
+    MainProc(hMain, MSG_APPBAR_MSGID, ABN_FULLSCREENAPP, TRUE);
+    Check(IsWindowVisible(hTaskBar), "Fullscreen on the other display hid this overlay");
 }
 
 static float reviewCpuTemperature = 55.125f;
@@ -569,6 +731,7 @@ int main()
         { "Composition and fullscreen vertical offsets", TestPopupLayout },
 		{ "Borderless fullscreen monitor bounds", TestFullscreenWindowBounds },
 		{ "Stale AppBar fullscreen state recovery", TestStaleAppBarFullscreenRecovery },
+        { "Fullscreen stays isolated across display focus changes", TestCrossMonitorFullscreen },
         { "CPU package priority, ACPI fallback and permission guidance", TestCpuTemperatureSources },
         { "CPU sensor broker keeps the temperature row visible", TestCpuTemperatureLayoutAvailability },
 		{ "CPU sensor broker validates sample errors and version status", TestCpuSensorBrokerSampleAndStatus },
